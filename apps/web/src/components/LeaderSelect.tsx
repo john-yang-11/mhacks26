@@ -210,6 +210,11 @@ export default function LeaderSelect({
   useEffect(() => {
     if (picks[0]) setChoice(picks[0]);
   }, [picks]);
+  // Until a leader is locked in, the highlighted one is the choice. The shared-world buttons
+  // (Create / Join) read it, so browsing to a free leader must not leave them claiming Highland.
+  useEffect(() => {
+    if (picks.length === 0) setChoice(LEADERS[cursor].civ);
+  }, [cursor, picks.length]);
 
   // The highlighted leader speaks for a moment whenever the highlight changes.
   useEffect(() => {
