@@ -1,59 +1,96 @@
-# SpacetimeDB setup
+# SpacetimeDB multiplayer
+
+Rising Waters v2 uses a Vercel-hosted Next.js frontend and a native TypeScript module on SpacetimeDB. Browsers connect directly to SpacetimeDB over WebSockets; Vercel does not proxy multiplayer traffic.
 
 ## Architecture
 
-Rising Waters uses a native TypeScript module running inside SpacetimeDB's V8 runtime. The browser subscribes through the official TypeScript SDK. The database stores rooms, claimed civilization seats, state revisions, and private quiz clocks. Reducers perform actions and turn transitions atomically; the browser never submits a replacement game state. No Flask, Python bridge, REST relay, or API key is needed.
+- `packages/game-core` contains the pure serializable game rules shared by the browser and module.
+- `spacetime/src/schema.ts` defines public `world` and `seat` tables plus private canonical world state and quiz timers.
+- Typed reducers in `spacetime/src/reducers.ts` authenticate the sender, require the current revision, apply the shared engine, and publish a sanitized snapshot.
+- Random state and the original seed never appear in public subscriptions.
+- `apps/web/src/multiplayer` owns production configuration, identity, connection lifecycle, subscriptions, reconnects, and typed reducer calls.
 
-The SDK and module dependency are pinned through lockfiles at 2.10.2. Generated bindings are checked in. Regenerate after changing reducer parameters or tables. Shared game state contains only JSON values, so cloning works both in browsers and the native runtime.
+SpacetimeDB CLI and SDK versions are pinned to 2.10.2. Generated bindings are committed under `apps/web/src/module_bindings`.
 
-## Local setup
+## Local development
 
-The root `npm run db:start`, `db:publish`, and `db:generate` scripts use a cross-platform Node launcher. It uses a portable CLI under `.tools/spacetime/` when present, otherwise a globally installed `spacetime` command, and refuses versions other than 2.10.2. Database files and local CLI identity remain in ignored `.tools/` folders. **Keep this folder to retain local worlds and publisher ownership.**
-
-From the repository root on macOS or Windows:
+From the repository root:
 
 ```sh
 npm ci --prefix spacetime
 npm ci --prefix apps/web
 npm run db:start
-# In another terminal:
+```
+
+In a second terminal:
+
+```sh
 npm run db:publish
 npm run db:generate
+npm run test:integration
 npm run dev
 ```
 
-The launcher consistently uses `.tools/data`, `.tools/config`, `--delete-data=never`, and a server-local publisher identity, so local development does not depend on cloud-account authentication. On first use it installs/selects CLI 2.10.2 under the ignored project configuration; subsequent publishes reuse the same identity. Set `SPACETIME_DATABASE=another-name` when running `db:publish` if you need a different local database name, and point the frontend variable at the same name. Manual Maincloud commands continue to use your normal global `spacetime login`.
+The local defaults are:
 
-## Publish to Maincloud
-
-1. Install the official 2.10.2 CLI, then run `spacetime login` yourself and finish its browser authentication. This login is only for publishing; browser players receive separate SDK identities automatically.
-2. Pick an available database name that you own. Publish from the repository root:
-
-```sh
-spacetime publish YOUR-DATABASE-NAME --module-path spacetime --server maincloud --delete-data=never --no-config
+```dotenv
+NEXT_PUBLIC_SPACETIME_URI=ws://127.0.0.1:3001
+NEXT_PUBLIC_SPACETIME_DATABASE=rising-waters-v2-local
 ```
 
-3. Copy `apps/web/.env.example` to `apps/web/.env.local`, and set:
+Use separate browser profiles for separate players. Tabs in one profile share a SpacetimeDB identity by design.
+
+## Production: Maincloud and Vercel
+
+Choose a new available Maincloud database name. `rising-waters-v2` is used below as an example.
+
+```sh
+spacetime login
+spacetime publish rising-waters-v2 --module-path spacetime --server maincloud --delete-data=never --no-config
+```
+
+Verify the exact published database before deploying the frontend:
+
+```sh
+NEXT_PUBLIC_SPACETIME_URI=wss://maincloud.spacetimedb.com \
+NEXT_PUBLIC_SPACETIME_DATABASE=rising-waters-v2 \
+npm run test:integration
+```
+
+Configure the Vercel project with root directory `apps/web` and set these variables for both Production and Preview:
 
 ```dotenv
 NEXT_PUBLIC_SPACETIME_URI=wss://maincloud.spacetimedb.com
-NEXT_PUBLIC_SPACETIME_DATABASE=YOUR-DATABASE-NAME
+NEXT_PUBLIC_SPACETIME_DATABASE=rising-waters-v2
 ```
 
-4. Restart the dev server, or rebuild the hosted frontend with these same public variables. Create a multiplayer room and join from another browser profile or device. Both players should see the same room revision.
+Redeploy after changing either public variable because Next.js embeds them during the build. Vercel builds fail if the values are absent or point to localhost.
 
-Use `--no-config` with an explicit server when publishing to cloud because the committed `spacetime.json` intentionally points at local development. If your provider gives a different WebSocket endpoint, use that endpoint. Account quotas, database-name availability, and cloud permissions are verified during your publish.
+## Production release gate
 
-## Identities and reconnecting
+The release is complete only after all of the following pass:
 
-Browser identity tokens are scoped to the configured server and database and saved in local storage. They prove seat ownership to reducers. Clearing browser storage loses that identity; export a practice save if you want an editable offline copy. Online worlds remain in SpacetimeDB and reconnect requires the original identity. A room code permits joining an open seat but does not grant control of already claimed civilizations.
+1. Unit tests, typecheck, formatting, production build, and generated bindings checks.
+2. The automated integration suite against the Maincloud database.
+3. Computer A creates a room from the public Vercel URL.
+4. Computer B, on a separate network or browser profile, joins that room.
+5. Both computers see the same lobby and enter play when the host starts.
+6. Both complete event, quiz, response, choice, build, and reach the next round.
+7. One computer disconnects and reconnects to its original seat.
+8. Browser network tools on both computers show a WebSocket to `wss://maincloud.spacetimedb.com` and the same database name, never `127.0.0.1`.
 
-Online room tables are currently public. Room codes are convenience lobby codes, not confidentiality boundaries. There are no emails, chat, payment information, or real-world personal profiles in the schema. Private forecasts and full anti-cheat isolation need per-player views before a competitive public release.
+## Updating the module
 
-## Current limits
+After changing schema or reducer parameters:
 
-Joining is available only during the first planning phase; locking all current seats starts the game with bots in unclaimed seats. The host advances shared phases. Host migration, disconnected-player timeouts, cleanup/expiry of rooms, and trade offers requiring acceptance are pending. Keep all human participants connected during a demo. Quiz clocks are measured by the database; replayed answers and actions by another civilization are rejected.
+```sh
+npm run db:generate
+npm run typecheck
+npm test
+```
 
-## References
+Commit generated bindings with the module change. Publish the module before deploying client code that calls the new reducers. For another clean reset, publish under a new database name and update Vercel instead of deleting the old database.
 
-[TypeScript quickstart](https://spacetimedb.com/docs/quickstarts/typescript/) · [Publishing modules](https://spacetimedb.com/docs/databases/building-publishing/) · [CLI reference](https://spacetimedb.com/docs/cli-reference/) · [Project configuration](https://spacetimedb.com/docs/cli-reference/spacetime-json/)
+## Identity and reconnects
+
+Identity tokens are scoped to the configured URI and database and stored in browser local storage. Reconnecting from the same browser profile restores the claimed seat. Clearing site data loses that identity. A room code permits joining an open seat but does not grant control of a claimed civilization.

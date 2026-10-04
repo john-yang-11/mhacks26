@@ -12,9 +12,13 @@ import {
 
 export default __t.row({
   id: __t.string().primaryKey(),
-  worldId: __t.string().name("world_id"),
-  identity: __t.identity(),
-  civ: __t.string(),
-  ready: __t.bool(),
-  joinedMicros: __t.u64().name("joined_micros"),
+  host: __t.identity(),
+  revision: __t.u32(),
+  status: __t.string(),
+  round: __t.u32(),
+  phase: __t.string(),
+  mode: __t.string(),
+  started: __t.bool(),
+  snapshotJson: __t.string().name("snapshot_json"),
+  updatedMicros: __t.u64().name("updated_micros"),
 });

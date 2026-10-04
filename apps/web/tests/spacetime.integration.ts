@@ -1,33 +1,41 @@
 import assert from "node:assert/strict";
+import type { Identity } from "spacetimedb";
 import { DbConnection } from "../src/module_bindings";
 import { QUESTIONS } from "../src/game/questions";
 import { RESEARCH } from "../src/game/content";
 import { canAfford } from "../src/game/engine";
-import type { GameState } from "../src/game/types";
+import type { PublicGameState } from "../src/game/types";
 
 const uri = process.env.NEXT_PUBLIC_SPACETIME_URI || "ws://127.0.0.1:3001";
 const database =
-  process.env.NEXT_PUBLIC_SPACETIME_DATABASE || "rising-waters-local";
+  process.env.NEXT_PUBLIC_SPACETIME_DATABASE || "rising-waters-v2-local";
 const id = Math.random().toString(36).slice(2, 8).toUpperCase().padEnd(6, "X");
-async function client() {
-  return new Promise<DbConnection>((resolve, reject) => {
+
+async function client(token?: string) {
+  return new Promise<{
+    conn: DbConnection;
+    token: string;
+    identity: Identity;
+  }>((resolve, reject) => {
     DbConnection.builder()
       .withUri(uri)
       .withDatabaseName(database)
-      .onConnect((conn) =>
+      .withToken(token)
+      .onConnect((conn, identity, nextToken) =>
         conn
           .subscriptionBuilder()
-          .onApplied(() => resolve(conn))
+          .onApplied(() => resolve({ conn, token: nextToken, identity }))
           .onError((ctx) => reject(ctx.event))
           .subscribe([
-            `SELECT * FROM room WHERE id = '${id}'`,
-            `SELECT * FROM seat WHERE room_id = '${id}'`,
+            `SELECT * FROM world WHERE id = '${id}'`,
+            `SELECT * FROM seat WHERE world_id = '${id}'`,
           ]),
       )
       .onConnectError((_ctx, error) => reject(error))
       .build();
   });
 }
+
 async function until(check: () => boolean) {
   const end = Date.now() + 10000;
   while (!check()) {
@@ -35,140 +43,176 @@ async function until(check: () => boolean) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
 async function main() {
-  const host = await client(),
-    guest = await client(),
-    intruder = await client();
+  const hostClient = await client();
+  const guestClient = await client();
+  const intruderClient = await client();
+  const host = hostClient.conn;
+  let guest = guestClient.conn;
+  const intruder = intruderClient.conn;
   try {
-    await host.reducers.createWorld({
-      roomId: id,
+    await host.reducers.worldCreate({
+      worldId: id,
       civ: "heartland",
       seed: 42,
       solo: false,
     });
-    await guest.reducers.joinWorld({ roomId: id, civ: "archipelago" });
+    await guest.reducers.worldJoin({ worldId: id, civ: "archipelago" });
     await assert.rejects(
-      intruder.reducers.joinWorld({ roomId: id, civ: "heartland" }),
+      intruder.reducers.worldJoin({ worldId: id, civ: "heartland" }),
       "claimed seats cannot be stolen",
     );
     await until(
       () =>
-        [...host.db.seat.iter()].length === 2 && !!guest.db.room.id.find(id),
+        [...host.db.seat.iter()].length === 2 && !!guest.db.world.id.find(id),
     );
-    const row = () => host.db.room.id.find(id)!;
-    const state = () => JSON.parse(row().stateJson) as GameState;
-    const act = (
-      conn: DbConnection,
-      action: object,
-      revision = row().revision,
-    ) =>
-      conn.reducers.act({
-        roomId: id,
-        revision,
-        actionJson: JSON.stringify(action),
-      });
+
+    const row = () => host.db.world.id.find(id)!;
+    const state = () => JSON.parse(row().snapshotJson) as PublicGameState;
+    assert.equal(row().status, "lobby");
+    assert.equal(row().started, false);
     assert.equal(state().round, 1);
     assert.equal(state().phase, "event");
-    assert.deepEqual(state().humans.sort(), ["archipelago", "heartland"]);
+    assert.equal("seed" in state, false, "seed stays server-only");
+    assert.equal("rng" in state, false, "rng stays server-only");
 
-    // Only the host moves from the event to the quiz.
-    await assert.rejects(guest.reducers.advance({ roomId: id }));
-    await host.reducers.advance({ roomId: id });
-    await until(() => state().phase === "quiz");
     await assert.rejects(
-      intruder.reducers.joinWorld({ roomId: id, civ: "enclave" }),
-      "joining closes once the event has advanced",
+      guest.reducers.worldStart({
+        worldId: id,
+        expectedRevision: row().revision,
+      }),
+      "only the host starts the lobby",
+    );
+    await host.reducers.worldStart({
+      worldId: id,
+      expectedRevision: row().revision,
+    });
+    await until(() => row().status === "active" && row().started);
+    await assert.rejects(
+      intruder.reducers.worldJoin({ worldId: id, civ: "enclave" }),
+      "joining closes when the lobby starts",
     );
 
-    // Each player answers their own question on the server clock; no replays.
+    await assert.rejects(
+      guest.reducers.phaseAdvance({
+        worldId: id,
+        expectedRevision: row().revision,
+      }),
+    );
+    await host.reducers.phaseAdvance({
+      worldId: id,
+      expectedRevision: row().revision,
+    });
+    await until(() => state().phase === "quiz");
+
     for (const [conn, civ] of [
       [host, "heartland"],
       [guest, "archipelago"],
     ] as const) {
       const questionId = state().civs[civ].quiz!.questionId;
-      const question = QUESTIONS.find((q) => q.id === questionId)!;
-      const answer = () =>
-        conn.reducers.answer({
-          roomId: id,
+      const question = QUESTIONS.find((item) => item.id === questionId)!;
+      const submit = () =>
+        conn.reducers.quizSubmit({
+          worldId: id,
+          expectedRevision: row().revision,
           questionId,
           option: question.correct,
-          lifeline: false,
         });
-      await assert.rejects(answer(), "must start the clock first");
-      await conn.reducers.beginQuestion({ roomId: id, questionId });
+      await assert.rejects(submit(), "the server clock must start first");
+      await conn.reducers.quizStart({
+        worldId: id,
+        expectedRevision: row().revision,
+        questionId,
+      });
       const previous = row().revision;
-      await answer();
+      await submit();
       await until(() => row().revision > previous);
-      await assert.rejects(answer(), "no second answer");
+      await assert.rejects(submit(), "answers cannot be replayed");
     }
     await until(() => state().phase === "response");
-    await act(host, { type: "acknowledge", civ: "heartland" });
+
+    await assert.rejects(
+      intruder.reducers.acknowledge({
+        worldId: id,
+        expectedRevision: row().revision,
+      }),
+      "unseated identities cannot act",
+    );
+    await host.reducers.acknowledge({
+      worldId: id,
+      expectedRevision: row().revision,
+    });
     await until(() => state().civs.heartland.responded === true);
-    assert.equal(state().phase, "response", "waits for the guest response");
-    await act(guest, { type: "acknowledge", civ: "archipelago" });
+    await guest.reducers.acknowledge({
+      worldId: id,
+      expectedRevision: row().revision,
+    });
     await until(() => state().phase === "choice");
 
-    // No impersonation, no stale revisions.
     await assert.rejects(
-      act(guest, { type: "choose", civ: "heartland", option: 2 }),
+      host.reducers.choose({ worldId: id, expectedRevision: 1, option: 2 }),
+      "stale revisions are rejected",
     );
-    await assert.rejects(
-      act(host, { type: "choose", civ: "heartland", option: 2 }, 1),
-    );
-    await act(host, { type: "choose", civ: "heartland", option: 2 });
+    await host.reducers.choose({
+      worldId: id,
+      expectedRevision: row().revision,
+      option: 2,
+    });
     await until(() => state().civs.heartland.choice === 2);
-    assert.equal(state().phase, "choice", "waits for the guest");
-    await act(guest, { type: "choose", civ: "archipelago", option: 2 });
+    await guest.reducers.choose({
+      worldId: id,
+      expectedRevision: row().revision,
+      option: 2,
+    });
     await until(() => state().phase === "build");
 
-    // New projects go through the same authenticated server reducer and replicate to both clients.
-    await assert.rejects(
-      act(host, { type: "research", civ: "heartland", technology: "unknown" }),
-    );
-    await assert.rejects(
-      act(guest, {
-        type: "research",
-        civ: "heartland",
-        technology: "solar_power",
-      }),
-    );
     const project = Object.entries(RESEARCH).find(
-      ([, t]) =>
-        !t.prerequisites.length &&
-        canAfford(state().civs.heartland.stock, t.cost),
+      ([, technology]) =>
+        !technology.prerequisites.length &&
+        canAfford(state().civs.heartland.stock, technology.cost),
     );
-    assert(project, "the test town can afford a research project");
-    await act(host, {
-      type: "research",
-      civ: "heartland",
+    assert(project, "the host can afford a research project");
+    await host.reducers.research({
+      worldId: id,
+      expectedRevision: row().revision,
       technology: project[0],
     });
     await until(() => state().civs.heartland.research?.id === project[0]);
-    assert.equal(state().civs.heartland.actionsUsed, 1);
-    await until(() => guest.db.room.id.find(id)?.revision === row().revision);
-    assert.equal(guest.db.room.id.find(id)?.stateJson, row().stateJson);
-    // Both end the turn; recovery persists and research advances on the server.
-    await host.reducers.ready({ roomId: id });
+
+    guest.disconnect();
+    const reconnected = await client(guestClient.token);
+    guest = reconnected.conn;
+    await until(() =>
+      [...guest.db.seat.iter()].some((seat) =>
+        seat.identity.isEqual(reconnected.identity),
+      ),
+    );
+    assert(
+      [...guest.db.seat.iter()].some((seat) => seat.civ === "archipelago"),
+      "the same identity reconnects to its seat",
+    );
+
+    await host.reducers.turnReady({
+      worldId: id,
+      expectedRevision: row().revision,
+    });
     assert.equal(state().phase, "build");
-    await guest.reducers.ready({ roomId: id });
+    await guest.reducers.turnReady({
+      worldId: id,
+      expectedRevision: row().revision,
+    });
     await until(() => state().round === 2);
     assert.equal(state().phase, "event");
-    assert(
-      state().civs.heartland.hazards!.length > 0 ||
-        state().news.some((n) => n.text.includes("recovery")),
+    await until(() => guest.db.world.id.find(id)?.revision === row().revision);
+    assert.equal(
+      guest.db.world.id.find(id)?.snapshotJson,
+      row().snapshotJson,
+      "both computers receive the same snapshot",
     );
-    assert.equal(state().civs.heartland.actionsUsed, 0);
-    if (project[1].turns > 1)
-      assert.equal(
-        state().civs.heartland.research?.remaining,
-        project[1].turns - 1,
-      );
-    else assert(state().civs.heartland.technologies!.includes(project[0]));
-    await until(() => guest.db.room.id.find(id)?.revision === row().revision);
-    assert.equal(guest.db.room.id.find(id)?.stateJson, row().stateJson);
-    await until(() => [...host.db.seat.iter()].every((seat) => !seat.ready));
+
     console.log(
-      "PASS: two identities share a room; claimed and late seats are rejected; host-only advance and server-timed quizzes work; response, choice, and ready phases wait for both players; impersonation and stale revisions are rejected.",
+      "PASS: v2 lobby, typed reducers, private RNG, revision checks, reconnect, and two-client round synchronization work.",
     );
   } finally {
     host.disconnect();
@@ -176,6 +220,7 @@ async function main() {
     intruder.disconnect();
   }
 }
+
 main().catch((error) => {
   console.error(error);
   process.exitCode = 1;

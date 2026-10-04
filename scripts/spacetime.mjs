@@ -16,7 +16,7 @@ const usesPortable = !process.env.SPACETIME_CLI && existsSync(portable);
 const cli =
   process.env.SPACETIME_CLI || (usesPortable ? portable : "spacetime");
 const root = ["--root-dir=.tools/config"];
-const database = process.env.SPACETIME_DATABASE || "rising-waters-local";
+const database = process.env.SPACETIME_DATABASE || "rising-waters-v2-local";
 
 function run(command, args) {
   const result = spawnSync(command, args, { stdio: "inherit", shell: false });

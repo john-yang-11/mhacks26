@@ -11,5 +11,8 @@ import {
 } from "spacetimedb";
 
 export default {
-  roomId: __t.string(),
+  worldId: __t.string(),
+  expectedRevision: __t.u32(),
+  give: __t.string(),
+  get: __t.string(),
 };

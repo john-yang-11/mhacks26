@@ -10,11 +10,8 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default __t.row({
-  id: __t.string().primaryKey(),
-  worldId: __t.string().name("world_id"),
-  identity: __t.identity(),
-  civ: __t.string(),
-  ready: __t.bool(),
-  joinedMicros: __t.u64().name("joined_micros"),
-});
+export default {
+  worldId: __t.string(),
+  expectedRevision: __t.u32(),
+  building: __t.string(),
+};

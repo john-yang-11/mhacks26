@@ -5,7 +5,7 @@
     "dev": "npm --prefix apps/web run dev",
     "build": "npm --prefix apps/web run build",
     "test": "npm --prefix apps/web test",
-    "typecheck": "npm --prefix apps/web run typecheck && npm --prefix spacetime run typecheck",
+    "typecheck": "node apps/web/node_modules/typescript/bin/tsc -p packages/game-core/tsconfig.json --noEmit && npm --prefix apps/web run typecheck && npm --prefix spacetime run typecheck",
     "db:start": "node scripts/spacetime.mjs start",
     "db:publish": "node scripts/spacetime.mjs publish",
     "db:generate": "node scripts/spacetime.mjs generate",
