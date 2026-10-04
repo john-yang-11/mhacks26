@@ -10,40 +10,26 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export const QuizTimer = __t.object("QuizTimer", {
+export const QuizClock = __t.object("QuizClock", {
   id: __t.string(),
-  worldId: __t.string(),
-  questionId: __t.string(),
   startedMicros: __t.u64(),
+  questionId: __t.string(),
 });
-export type QuizTimer = __Infer<typeof QuizTimer>;
+export type QuizClock = __Infer<typeof QuizClock>;
 
-export const Seat = __t.object("Seat", {
-  id: __t.string(),
-  worldId: __t.string(),
-  identity: __t.identity(),
-  civ: __t.string(),
-  ready: __t.bool(),
-  joinedMicros: __t.u64(),
-});
-export type Seat = __Infer<typeof Seat>;
-
-export const World = __t.object("World", {
+export const Room = __t.object("Room", {
   id: __t.string(),
   host: __t.identity(),
   revision: __t.u32(),
-  status: __t.string(),
-  round: __t.u32(),
-  phase: __t.string(),
-  mode: __t.string(),
-  started: __t.bool(),
-  snapshotJson: __t.string(),
-  updatedMicros: __t.u64(),
-});
-export type World = __Infer<typeof World>;
-
-export const WorldState = __t.object("WorldState", {
-  worldId: __t.string(),
   stateJson: __t.string(),
 });
-export type WorldState = __Infer<typeof WorldState>;
+export type Room = __Infer<typeof Room>;
+
+export const Seat = __t.object("Seat", {
+  id: __t.string(),
+  roomId: __t.string(),
+  identity: __t.identity(),
+  civ: __t.string(),
+  ready: __t.bool(),
+});
+export type Seat = __Infer<typeof Seat>;

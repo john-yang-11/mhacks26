@@ -6,7 +6,7 @@ import {
 } from "../src/game/identityToken";
 
 const uri = "wss://maincloud.spacetimedb.com";
-const database = "rising-waters-v2";
+const database = "earth-share";
 const currentKey = identityTokenKey(uri, database);
 const legacyKey = `earthshare-identity:${uri}:${database}`;
 
@@ -35,15 +35,15 @@ test("keeps an existing Rising Waters identity", () => {
   assert.equal(store.values.get(currentKey), "current-token");
 });
 
-test("does not replace an established v2 identity with a legacy token", () => {
+test("recovers the legacy identity after a failed post-rename reconnect", () => {
   const store = storage([
     [currentKey, "unclaimed-token"],
     [legacyKey, "seat-owner-token"],
   ]);
 
-  assert.equal(migrateIdentityToken(store, uri, database), "unclaimed-token");
-  assert.equal(store.values.get(currentKey), "unclaimed-token");
-  assert.equal(store.values.has(legacyKey), true);
+  assert.equal(migrateIdentityToken(store, uri, database), "seat-owner-token");
+  assert.equal(store.values.get(currentKey), "seat-owner-token");
+  assert.equal(store.values.has(legacyKey), false);
 });
 
 test("returns no token when neither identity key exists", () => {

@@ -11,4 +11,3 @@ infra/.host
 __pycache__/
 spacetime/dist/
 !.env.example
-.vercel

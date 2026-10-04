@@ -34,30 +34,41 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
-import AcknowledgeReducer from "./acknowledge_reducer";
-import BuildReducer from "./build_reducer";
-import ChooseReducer from "./choose_reducer";
-import ContainReducer from "./contain_reducer";
-import ExchangeReducer from "./exchange_reducer";
-import PhaseAdvanceReducer from "./phase_advance_reducer";
-import QuizStartReducer from "./quiz_start_reducer";
-import QuizSubmitReducer from "./quiz_submit_reducer";
-import ResearchReducer from "./research_reducer";
-import TurnReadyReducer from "./turn_ready_reducer";
-import WorldCreateReducer from "./world_create_reducer";
-import WorldJoinReducer from "./world_join_reducer";
-import WorldStartReducer from "./world_start_reducer";
+import ActReducer from "./act_reducer";
+import AdvanceReducer from "./advance_reducer";
+import AnswerReducer from "./answer_reducer";
+import BeginQuestionReducer from "./begin_question_reducer";
+import CreateWorldReducer from "./create_world_reducer";
+import JoinWorldReducer from "./join_world_reducer";
+import ReadyReducer from "./ready_reducer";
 
 // Import all procedure arg schemas
 
 // Import all table schema definitions
+import RoomRow from "./room_table";
 import SeatRow from "./seat_table";
-import WorldRow from "./world_table";
 
 /** Type-only namespace exports for generated type groups. */
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
+  room: __table(
+    {
+      name: "room",
+      indexes: [
+        {
+          accessor: "id",
+          name: "room_id_idx_btree",
+          algorithm: "btree",
+          columns: ["id"],
+        },
+      ],
+      constraints: [
+        { name: "room_id_key", constraint: "unique", columns: ["id"] },
+      ],
+    },
+    RoomRow,
+  ),
   seat: __table(
     {
       name: "seat",
@@ -69,10 +80,10 @@ const tablesSchema = __schema({
           columns: ["id"],
         },
         {
-          accessor: "worldId",
-          name: "seat_world_id_idx_btree",
+          accessor: "roomId",
+          name: "seat_room_id_idx_btree",
           algorithm: "btree",
-          columns: ["worldId"],
+          columns: ["roomId"],
         },
       ],
       constraints: [
@@ -81,40 +92,17 @@ const tablesSchema = __schema({
     },
     SeatRow,
   ),
-  world: __table(
-    {
-      name: "world",
-      indexes: [
-        {
-          accessor: "id",
-          name: "world_id_idx_btree",
-          algorithm: "btree",
-          columns: ["id"],
-        },
-      ],
-      constraints: [
-        { name: "world_id_key", constraint: "unique", columns: ["id"] },
-      ],
-    },
-    WorldRow,
-  ),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
-  __reducerSchema("acknowledge", AcknowledgeReducer),
-  __reducerSchema("build", BuildReducer),
-  __reducerSchema("choose", ChooseReducer),
-  __reducerSchema("contain", ContainReducer),
-  __reducerSchema("exchange", ExchangeReducer),
-  __reducerSchema("phase_advance", PhaseAdvanceReducer),
-  __reducerSchema("quiz_start", QuizStartReducer),
-  __reducerSchema("quiz_submit", QuizSubmitReducer),
-  __reducerSchema("research", ResearchReducer),
-  __reducerSchema("turn_ready", TurnReadyReducer),
-  __reducerSchema("world_create", WorldCreateReducer),
-  __reducerSchema("world_join", WorldJoinReducer),
-  __reducerSchema("world_start", WorldStartReducer),
+  __reducerSchema("act", ActReducer),
+  __reducerSchema("advance", AdvanceReducer),
+  __reducerSchema("answer", AnswerReducer),
+  __reducerSchema("begin_question", BeginQuestionReducer),
+  __reducerSchema("create_world", CreateWorldReducer),
+  __reducerSchema("join_world", JoinWorldReducer),
+  __reducerSchema("ready", ReadyReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

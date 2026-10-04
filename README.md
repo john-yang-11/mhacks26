@@ -28,7 +28,7 @@ npm run db:generate
 npm run dev
 ```
 
-Open http://127.0.0.1:3000. The frontend defaults to `ws://127.0.0.1:3001` and local database `rising-waters-v2-local`. Select **Create saved solo world**, or select **4-player hot-seat** then **Create multiplayer world**. Friends select an unclaimed civilization and join with the six-character room code. The practice button plays locally without the database.
+Open http://127.0.0.1:3000. The frontend defaults to `ws://127.0.0.1:3001` and local database `rising-waters-local`. Select **Create saved solo world**, or select **4-player hot-seat** then **Create multiplayer world**. Friends select an unclaimed civilization and join with the six-character room code. The practice button plays locally without the database.
 
 The root database scripts use the same Node launcher on macOS and Windows, keep local data and publisher identity under ignored `.tools/`, and require CLI version 2.10.2. Use `spacetime login` only when publishing to Maincloud; never put publisher credentials in browser environment variables.
 

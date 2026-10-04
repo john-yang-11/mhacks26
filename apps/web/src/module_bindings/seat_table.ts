@@ -12,9 +12,8 @@ import {
 
 export default __t.row({
   id: __t.string().primaryKey(),
-  worldId: __t.string().name("world_id"),
+  roomId: __t.string().name("room_id"),
   identity: __t.identity(),
   civ: __t.string(),
   ready: __t.bool(),
-  joinedMicros: __t.u64().name("joined_micros"),
 });

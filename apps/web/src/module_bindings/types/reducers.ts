@@ -6,30 +6,18 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
-import AcknowledgeReducer from "../acknowledge_reducer";
-import BuildReducer from "../build_reducer";
-import ChooseReducer from "../choose_reducer";
-import ContainReducer from "../contain_reducer";
-import ExchangeReducer from "../exchange_reducer";
-import PhaseAdvanceReducer from "../phase_advance_reducer";
-import QuizStartReducer from "../quiz_start_reducer";
-import QuizSubmitReducer from "../quiz_submit_reducer";
-import ResearchReducer from "../research_reducer";
-import TurnReadyReducer from "../turn_ready_reducer";
-import WorldCreateReducer from "../world_create_reducer";
-import WorldJoinReducer from "../world_join_reducer";
-import WorldStartReducer from "../world_start_reducer";
+import ActReducer from "../act_reducer";
+import AdvanceReducer from "../advance_reducer";
+import AnswerReducer from "../answer_reducer";
+import BeginQuestionReducer from "../begin_question_reducer";
+import CreateWorldReducer from "../create_world_reducer";
+import JoinWorldReducer from "../join_world_reducer";
+import ReadyReducer from "../ready_reducer";
 
-export type AcknowledgeParams = __Infer<typeof AcknowledgeReducer>;
-export type BuildParams = __Infer<typeof BuildReducer>;
-export type ChooseParams = __Infer<typeof ChooseReducer>;
-export type ContainParams = __Infer<typeof ContainReducer>;
-export type ExchangeParams = __Infer<typeof ExchangeReducer>;
-export type PhaseAdvanceParams = __Infer<typeof PhaseAdvanceReducer>;
-export type QuizStartParams = __Infer<typeof QuizStartReducer>;
-export type QuizSubmitParams = __Infer<typeof QuizSubmitReducer>;
-export type ResearchParams = __Infer<typeof ResearchReducer>;
-export type TurnReadyParams = __Infer<typeof TurnReadyReducer>;
-export type WorldCreateParams = __Infer<typeof WorldCreateReducer>;
-export type WorldJoinParams = __Infer<typeof WorldJoinReducer>;
-export type WorldStartParams = __Infer<typeof WorldStartReducer>;
+export type ActParams = __Infer<typeof ActReducer>;
+export type AdvanceParams = __Infer<typeof AdvanceReducer>;
+export type AnswerParams = __Infer<typeof AnswerReducer>;
+export type BeginQuestionParams = __Infer<typeof BeginQuestionReducer>;
+export type CreateWorldParams = __Infer<typeof CreateWorldReducer>;
+export type JoinWorldParams = __Infer<typeof JoinWorldReducer>;
+export type ReadyParams = __Infer<typeof ReadyReducer>;

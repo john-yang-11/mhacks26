@@ -10,8 +10,9 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  worldId: __t.string(),
-  expectedRevision: __t.u32(),
-  option: __t.i32(),
-};
+export default __t.row({
+  id: __t.string().primaryKey(),
+  host: __t.identity(),
+  revision: __t.u32(),
+  stateJson: __t.string().name("state_json"),
+});

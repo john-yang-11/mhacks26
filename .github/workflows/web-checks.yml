@@ -1,23 +1,9 @@
 name: Web game checks
 on:
   push:
-    paths:
-      [
-        "apps/web/**",
-        "packages/game-core/**",
-        "src/data/**",
-        "spacetime/**",
-        ".github/workflows/web-checks.yml",
-      ]
+    paths: ['apps/web/**', 'src/data/**', 'spacetime/**', '.github/workflows/web-checks.yml']
   pull_request:
-    paths:
-      [
-        "apps/web/**",
-        "packages/game-core/**",
-        "src/data/**",
-        "spacetime/**",
-        ".github/workflows/web-checks.yml",
-      ]
+    paths: ['apps/web/**', 'src/data/**', 'spacetime/**', '.github/workflows/web-checks.yml']
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -32,19 +18,9 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
-      - run: node node_modules/typescript/bin/tsc -p ../../packages/game-core/tsconfig.json --noEmit
       - run: npm run typecheck
       - run: npm run format:check
       - run: npm test
       - run: npm run build
       - run: npm ci --prefix ../../spacetime
       - run: npm run typecheck --prefix ../../spacetime
-      - name: Verify generated SpacetimeDB bindings
-        working-directory: .
-        run: |
-          curl -sSf https://install.spacetimedb.com | sh
-          export PATH="$HOME/.local/bin:$PATH"
-          spacetime version install 2.10.2
-          spacetime version use 2.10.2
-          npm run db:generate
-          git diff --exit-code -- apps/web/src/module_bindings

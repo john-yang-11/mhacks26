@@ -11,6 +11,8 @@ import {
 } from "spacetimedb";
 
 export default {
-  worldId: __t.string(),
+  roomId: __t.string(),
   civ: __t.string(),
+  seed: __t.u32(),
+  solo: __t.bool(),
 };

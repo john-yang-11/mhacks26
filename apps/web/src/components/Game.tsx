@@ -55,9 +55,7 @@ import {
 } from "@/game/leaders";
 import { townOf, KINGDOM } from "@/game/towns";
 import { useWorld } from "@/game/useWorld";
-import ConnectionBanner from "./ConnectionBanner";
 import LeaderSelect from "./LeaderSelect";
-import MultiplayerSetup from "./MultiplayerSetup";
 import Narrator from "./Narrator";
 import RadioControl from "./RadioControl";
 import RoomLobby from "./RoomLobby";
@@ -110,6 +108,7 @@ export default function Game() {
     [importError, setImportError] = useState("");
   const world = useWorld(setState);
   const [roomCode, setRoomCode] = useState("");
+  const [hostStarted, setHostStarted] = useState(false);
   const online = !!world.roomId;
 
   useEffect(() => {
@@ -194,6 +193,7 @@ export default function Game() {
     if (state && !online) setResume(state);
     world.disconnect();
     setState(null);
+    setHostStarted(false);
   }
   function exportSave() {
     if (!state) return;
@@ -282,16 +282,51 @@ export default function Game() {
               </p>
             )}
           </div>
-          <MultiplayerSetup
-            choice={choice}
-            mode={mode}
-            seed={seed}
-            roomCode={roomCode}
-            setRoomCode={setRoomCode}
-            status={world.status}
-            error={world.error}
-            connect={world.connect}
-          />
+          <div className="ls-option-group online-setup">
+            <b>PLAY A SHARED WORLD</b>
+            <p>
+              Live rooms use SpacetimeDB. You claim the leader you picked;
+              unclaimed towns are run by AI neighbors.
+            </p>
+            <label>
+              Room code{" "}
+              <input
+                aria-label="Room code"
+                maxLength={6}
+                value={roomCode}
+                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                placeholder="ABC123"
+              />
+            </label>
+            <div className="setup-footer">
+              <button
+                onClick={() => {
+                  const id = Array.from(
+                    crypto.getRandomValues(new Uint8Array(6)),
+                    (n) => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[n % 32],
+                  ).join("");
+                  setRoomCode(id);
+                  void world.connect(
+                    id,
+                    choice,
+                    Number(seed) || newSeed(),
+                    mode === "solo",
+                  );
+                }}
+              >
+                Create {mode === "solo" ? "saved solo" : "multiplayer"} world
+              </button>
+              <button onClick={() => void world.connect(roomCode, choice)}>
+                Join / reconnect
+              </button>
+            </div>
+            <span role="status">{world.status}</span>
+            {world.error && (
+              <p role="alert" className="error">
+                {world.error}
+              </p>
+            )}
+          </div>
         </LeaderSelect>
         {help && <Help onClose={() => setHelp(false)} />}
       </>
@@ -304,7 +339,7 @@ export default function Game() {
     state.mode !== "solo" &&
     state.round === 1 &&
     state.phase === "event" &&
-    !world.started
+    !(world.isHost && hostStarted)
   )
     return (
       <RoomLobby
@@ -312,7 +347,7 @@ export default function Game() {
         seats={world.seats}
         isHost={world.isHost}
         me={me}
-        onStart={() => void world.start()}
+        onStart={() => setHostStarted(true)}
         onLeave={backToSetup}
       />
     );
@@ -344,7 +379,6 @@ export default function Game() {
 
   return (
     <main className="game-app world-view">
-      {online && <ConnectionBanner phase={world.phase} status={world.status} />}
       <aside className="sidebar">
         <a
           href="/"
