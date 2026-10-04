@@ -126,6 +126,9 @@ export function useWorld(onState: (state: GameState) => void) {
     send(() => connection.current!.reducers.ready({ roomId }));
   const advance = () =>
     send(() => connection.current!.reducers.advance({ roomId }));
+  /** Host leaves the waiting room: the shared flag lets every player in. */
+  const start = () =>
+    send(() => connection.current!.reducers.startWorld({ roomId }));
   const begin = (questionId: string) =>
     send(() =>
       connection.current!.reducers.beginQuestion({ roomId, questionId }),
@@ -152,6 +155,7 @@ export function useWorld(onState: (state: GameState) => void) {
     act,
     ready,
     advance,
+    start,
     begin,
     answer,
   };

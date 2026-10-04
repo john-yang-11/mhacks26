@@ -41,6 +41,7 @@ import BeginQuestionReducer from "./begin_question_reducer";
 import CreateWorldReducer from "./create_world_reducer";
 import JoinWorldReducer from "./join_world_reducer";
 import ReadyReducer from "./ready_reducer";
+import StartWorldReducer from "./start_world_reducer";
 
 // Import all procedure arg schemas
 
@@ -103,6 +104,7 @@ const reducersSchema = __reducers(
   __reducerSchema("create_world", CreateWorldReducer),
   __reducerSchema("join_world", JoinWorldReducer),
   __reducerSchema("ready", ReadyReducer),
+  __reducerSchema("start_world", StartWorldReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */

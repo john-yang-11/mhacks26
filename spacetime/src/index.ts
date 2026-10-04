@@ -143,6 +143,8 @@ export const joinWorld = database.reducer(
       state = JSON.parse(row.stateJson) as GameState;
     if (state.mode === "solo" || state.round !== 1 || state.phase !== "event")
       throw new SenderError("This world is not accepting new players.");
+    if (state.started)
+      throw new SenderError("The host has already started this game.");
     if (!CIV_IDS.includes(args.civ as CivId))
       throw new SenderError("Unknown civilization.");
     if (
@@ -161,6 +163,21 @@ export const joinWorld = database.reducer(
       ready: false,
     });
     state.humans = [...new Set([...state.humans, args.civ as CivId])];
+    save(ctx, row, state);
+  },
+);
+export const startWorld = database.reducer(
+  { roomId: t.string() },
+  (ctx, args) => {
+    const row = getRoom(ctx, args.roomId);
+    getSeat(ctx, row.id);
+    if (!row.host.isEqual(ctx.sender))
+      throw new SenderError("Only the host can start the game.");
+    const state = JSON.parse(row.stateJson) as GameState;
+    if (state.mode === "solo" || state.round !== 1 || state.phase !== "event")
+      throw new SenderError("This world can't be started.");
+    if (state.started) return;
+    state.started = true;
     save(ctx, row, state);
   },
 );

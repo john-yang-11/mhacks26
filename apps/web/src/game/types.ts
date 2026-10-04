@@ -136,6 +136,8 @@ export interface GameState {
   collapseCause?: { type: "mega_tsunami"; origin: CivId; started: number };
   scheduled?: ScheduledHazard[];
   minorEvents?: Partial<Record<CivId, CycleEvent>>;
+  /** Shared worlds only: the host has left the waiting room, so everyone enters the game and the roster locks. */
+  started?: boolean;
 }
 
 export type Action =

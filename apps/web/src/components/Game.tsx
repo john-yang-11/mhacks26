@@ -108,7 +108,6 @@ export default function Game() {
     [importError, setImportError] = useState("");
   const world = useWorld(setState);
   const [roomCode, setRoomCode] = useState("");
-  const [hostStarted, setHostStarted] = useState(false);
   const online = !!world.roomId;
 
   useEffect(() => {
@@ -193,7 +192,6 @@ export default function Game() {
     if (state && !online) setResume(state);
     world.disconnect();
     setState(null);
-    setHostStarted(false);
   }
   function exportSave() {
     if (!state) return;
@@ -339,7 +337,7 @@ export default function Game() {
     state.mode !== "solo" &&
     state.round === 1 &&
     state.phase === "event" &&
-    !(world.isHost && hostStarted)
+    !state.started
   )
     return (
       <RoomLobby
@@ -347,7 +345,7 @@ export default function Game() {
         seats={world.seats}
         isHost={world.isHost}
         me={me}
-        onStart={() => setHostStarted(true)}
+        onStart={() => void world.start()}
         onLeave={backToSetup}
       />
     );

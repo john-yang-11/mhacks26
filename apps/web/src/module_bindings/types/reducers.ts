@@ -13,6 +13,7 @@ import BeginQuestionReducer from "../begin_question_reducer";
 import CreateWorldReducer from "../create_world_reducer";
 import JoinWorldReducer from "../join_world_reducer";
 import ReadyReducer from "../ready_reducer";
+import StartWorldReducer from "../start_world_reducer";
 
 export type ActParams = __Infer<typeof ActReducer>;
 export type AdvanceParams = __Infer<typeof AdvanceReducer>;
@@ -21,3 +22,4 @@ export type BeginQuestionParams = __Infer<typeof BeginQuestionReducer>;
 export type CreateWorldParams = __Infer<typeof CreateWorldReducer>;
 export type JoinWorldParams = __Infer<typeof JoinWorldReducer>;
 export type ReadyParams = __Infer<typeof ReadyReducer>;
+export type StartWorldParams = __Infer<typeof StartWorldReducer>;
