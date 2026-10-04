@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { CIVS } from "@/game/content";
+import { townOf } from "@/game/towns";
 import type { CivId } from "@/game/types";
 
-/** Arcade "player select" screen from the Civilizations artboard (assets/reference/civilizations.png). */
+/** Hero-select screen: the highlighted leader stands over their town, with a stat card on the right. */
 interface Leader {
   civ: CivId;
   sprite: string;
@@ -77,32 +78,101 @@ export const LEADERS: Leader[] = [
   },
 ];
 
-/** Home yield per cycle (0–2) shown as 1–5 bars. */
-const bars = (perCycle: number) => Math.min(5, 1 + perCycle * 2);
+// ---------- layout constants (design canvas 1440 x 900) ----------
+const DESIGN_W = 1440;
+const DESIGN_H = 900;
+const MAP_TILE_PX = 4; // world-map.png is 320 x 200 tiles at 4 px
+const MAP_W = 1280;
+const MAP_H = 800;
+const BG_SCALE = 3;
+const SPRITE_SCALE = 10;
+const TALK_MS = 300;
+const PICK_SECONDS = 30;
 
-function Bar({
+type Stat = "sheep" | "wheat" | "wood" | "brick" | "ore";
+const RESOURCES: Stat[] = ["sheep", "wheat", "wood", "brick", "ore"];
+/** Cell index in /assets/resource_icons.png (16 px cells, cut from resources_sheet.webp). */
+const ICON_INDEX: Record<Stat, number> = {
+  sheep: 0,
+  wheat: 1,
+  wood: 2,
+  brick: 3,
+  ore: 4,
+};
+
+type Rank = "best" | "worst" | undefined;
+/** Best/worst of all four civs. For pollution, lower is better. */
+function rank(values: number[], i: number, lowerIsBetter = false): Rank {
+  const hi = Math.max(...values),
+    lo = Math.min(...values);
+  if (hi === lo) return undefined;
+  const v = values[i];
+  if (v === (lowerIsBetter ? lo : hi)) return "best";
+  if (v === (lowerIsBetter ? hi : lo)) return "worst";
+  return undefined;
+}
+
+function StatRow({
   label,
   value,
-  tone,
+  blocks,
+  color,
+  icon,
+  mark,
 }: {
   label: string;
   value: number;
-  tone?: string;
+  blocks: number;
+  color: string;
+  icon?: number;
+  mark: Rank;
 }) {
   return (
-    <div className="ls-stat" aria-label={`${label} ${value} of 5`}>
-      <span>{label}</span>
-      <i>
+    <div className="hs-stat" aria-label={`${label} ${value}`}>
+      {icon !== undefined ? (
+        <i
+          className="hs-icon"
+          style={{ backgroundPosition: `${-icon * 24}px 0` }}
+          aria-hidden="true"
+        />
+      ) : (
+        <i className="hs-icon hs-icon-blank" aria-hidden="true" />
+      )}
+      <span className="hs-label">{label}</span>
+      <span className="hs-bar" aria-hidden="true">
         {[0, 1, 2, 3, 4].map((n) => (
-          <b
-            key={n}
-            className={n < value ? "on" : ""}
-            style={n < value && tone ? { background: tone } : undefined}
-          />
+          <b key={n} style={n < blocks ? { background: color } : undefined} />
         ))}
-      </i>
+      </span>
+      <span className="hs-num">{value}</span>
+      <span className={`hs-mark ${mark ?? ""}`}>
+        {mark === "best" ? "★" : mark === "worst" ? "▼" : ""}
+        {mark && (
+          <span className="sr-only">
+            {mark === "best" ? "best of all civs" : "worst of all civs"}
+          </span>
+        )}
+      </span>
     </div>
   );
+}
+
+/** Largest integer scale that fits the design canvas; fractional only when the screen is smaller. */
+function useDesignScale() {
+  const [scale, setScale] = useState(1);
+  useEffect(() => {
+    const fit = () => {
+      const s = Math.min(
+        window.innerWidth / DESIGN_W,
+        window.innerHeight / DESIGN_H,
+      );
+      setScale(s >= 1 ? Math.floor(s) : s);
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
+  return scale;
 }
 
 export default function LeaderSelect({
@@ -126,32 +196,54 @@ export default function LeaderSelect({
   );
   const [picks, setPicks] = useState<CivId[]>([]);
   const [more, setMore] = useState(false);
+  const [talking, setTalking] = useState(false);
+  const [timer, setTimer] = useState(PICK_SECONDS);
+  const scale = useDesignScale();
   const seats = mode === "hotseat" ? 4 : 1;
   const chooser = Math.min(picks.length + 1, seats);
   const leader = LEADERS[cursor];
   const civ = CIVS[leader.civ];
+  const takenBy = (id: CivId) => picks.indexOf(id);
+  const highlightTaken = takenBy(leader.civ) >= 0;
 
   useEffect(() => setPicks((p) => p.slice(0, seats)), [seats]);
   useEffect(() => {
     if (picks[0]) setChoice(picks[0]);
   }, [picks]);
 
-  function pick(i: number) {
+  // The highlighted leader speaks for a moment whenever the highlight changes.
+  useEffect(() => {
+    setTalking(true);
+    const t = window.setTimeout(() => setTalking(false), TALK_MS);
+    return () => window.clearTimeout(t);
+  }, [cursor]);
+
+  /** Lock the highlighted leader for the current seat; the last lock starts the game. */
+  function lockIn(i = cursor) {
     const id = LEADERS[i].civ;
     setCursor(i);
-    if (mode === "solo") {
-      setPicks([id]);
-      setChoice(id);
+    if (takenBy(id) >= 0 || picks.length >= seats) return;
+    const next = [...picks, id];
+    setPicks(next);
+    setChoice(next[0]);
+    if (next.length >= seats) onConfirm(next[0]);
+  }
+
+  // Each seat gets PICK_SECONDS; when time runs out the highlighted (or first free) leader is locked.
+  useEffect(() => setTimer(PICK_SECONDS), [chooser]);
+  useEffect(() => {
+    if (more || picks.length >= seats) return;
+    if (timer <= 0) {
+      const free = highlightTaken
+        ? LEADERS.findIndex((l) => takenBy(l.civ) < 0)
+        : cursor;
+      if (free >= 0) lockIn(free);
       return;
     }
-    if (picks.includes(id) || picks.length >= seats) return;
-    setPicks([...picks, id]);
-  }
-  function confirm() {
-    const civ = picks[0] ?? leader.civ;
-    setChoice(civ);
-    onConfirm(civ);
-  }
+    const t = window.setTimeout(() => setTimer((s) => s - 1), 1000);
+    return () => window.clearTimeout(t);
+  }, [timer, more, picks.length, seats]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
@@ -159,10 +251,10 @@ export default function LeaderSelect({
         setMore(false);
         return;
       }
-      if (el.closest("input, textarea, select, .ls-options")) return;
+      if (more || el.closest("input, textarea, select, .ls-options")) return;
       if (e.key === "ArrowRight") setCursor((c) => (c + 1) % 4);
       else if (e.key === "ArrowLeft") setCursor((c) => (c + 3) % 4);
-      else if (e.key === "Enter" && !el.closest("button")) pick(cursor);
+      else if (e.key === "Enter" && !el.closest("button")) lockIn();
       else if (e.key === "Backspace") setPicks((p) => p.slice(0, -1));
       else return;
       e.preventDefault();
@@ -171,130 +263,206 @@ export default function LeaderSelect({
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const badge = (id: CivId) => {
-    const seat = picks.indexOf(id);
-    if (seat >= 0) return `${seat + 1}P`;
-    return mode === "solo" && picks.length ? "AI" : "OPEN";
-  };
+  // Background: a 3x crop of the world map centred on the highlighted civ's keep.
+  const [kx, ky] = townOf(leader.civ).keepTile;
+  const clamp = (v: number, max: number) => Math.min(0, Math.max(v, max));
+  const bgX = clamp(
+    DESIGN_W / 2 - kx * MAP_TILE_PX * BG_SCALE,
+    DESIGN_W - MAP_W * BG_SCALE,
+  );
+  const bgY = clamp(
+    DESIGN_H / 2 - ky * MAP_TILE_PX * BG_SCALE,
+    DESIGN_H - MAP_H * BG_SCALE,
+  );
+
+  // Stat bars: the largest value of each stat across all civs fills 5 blocks.
+  const all = (f: (l: Leader) => number) => LEADERS.map(f);
+  const startOf = (l: Leader, r: Stat) =>
+    (CIVS[l.civ].start as Record<Stat, number>)[r];
+  const playerName = (seat: number) =>
+    mode === "solo" ? "YOU" : `PLAYER ${seat + 1}`;
 
   return (
-    <main className="leader-select">
-      <header className="ls-header">
-        <div className="ls-closeup" aria-hidden="true">
-          <img src={`/assets/leaders/${leader.sprite}-portrait.png`} alt="" />
-        </div>
-        <div className="ls-title">
-          <h1>CHOOSE YOUR LEADER</h1>
-          <span className="ls-chooser" style={{ background: leader.color }}>
-            {picks.length >= seats ? "READY" : `PLAYER ${chooser} CHOOSING`}
-          </span>
-          <p className="ls-narration">
-            Snow melts. The river rises. Four peoples share one valley, and
-            every choice flows downstream. Who will you lead?
-          </p>
-        </div>
-      </header>
-
-      <section className="ls-stage" aria-label="Leaders">
-        {LEADERS.map((l, i) => {
-          const b = badge(l.civ);
-          const taken = b.endsWith("P");
-          return (
-            <button
-              key={l.civ}
-              className={`ls-column ${i === cursor ? "highlight" : ""}`}
-              style={{ "--civ": l.color } as React.CSSProperties}
-              aria-pressed={taken}
-              aria-label={`${l.title}, ${CIVS[l.civ].name}. ${taken ? `Picked by player ${b}` : "Open"}`}
-              onMouseEnter={() => setCursor(i)}
-              onFocus={() => setCursor(i)}
-              onClick={() => pick(i)}
-            >
-              <i className="ls-diamond" />
-              <small>{l.role}</small>
-              <strong className={l.name.length > 10 ? "ls-long" : ""}>
-                {l.name}
-              </strong>
-              <em>{CIVS[l.civ].name}</em>
-              <span className="ls-figure">
-                {i === cursor && (
-                  <svg
-                    className="ls-brackets"
-                    viewBox="0 0 100 100"
-                    preserveAspectRatio="none"
-                    aria-hidden="true"
-                  >
-                    <path d="M0 14V0H14M86 0H100V14M100 86V100H86M14 100H0V86" />
-                  </svg>
-                )}
-                <span className="ls-sprite">
-                  {i === cursor && picks.length < seats && (
-                    <span className="ls-cursor">{chooser}P</span>
-                  )}
-                  <img
-                    src={`/assets/leaders/${l.sprite}.png`}
-                    width={l.size[0] * 5}
-                    height={l.size[1] * 5}
-                    style={{ "--rows": l.size[1] } as React.CSSProperties}
-                    alt=""
-                  />
-                </span>
-              </span>
-              <span className="ls-zig" aria-hidden="true" />
-              <span className={`ls-badge ${taken ? "taken" : ""}`}>
-                <span>{b}</span>
-              </span>
-            </button>
-          );
-        })}
-      </section>
-
-      <section
-        className="ls-info"
-        style={{ "--civ": leader.color } as React.CSSProperties}
+    <main
+      className="hero-select"
+      style={{ "--civ": leader.color } as CSSProperties}
+    >
+      <div
+        className="hs-canvas"
+        style={{
+          transform: `translate(-50%, -50%) scale(${scale})`,
+        }}
       >
-        <img
-          className="ls-portrait"
-          src={`/assets/leaders/${leader.sprite}-portrait.png`}
-          alt={leader.title}
+        <div
+          className="hs-bg"
+          aria-hidden="true"
+          style={{
+            backgroundSize: `${MAP_W * BG_SCALE}px ${MAP_H * BG_SCALE}px`,
+            backgroundPosition: `${bgX}px ${bgY}px`,
+          }}
         />
-        <div className="ls-copy">
-          <h2>
-            {leader.title} - <span>{civ.name.toUpperCase()}</span>
-          </h2>
-          <p>
-            <b>{leader.ability[0]}:</b> {leader.ability[1]}
-          </p>
-          <p>
-            <b className="exposed">Exposed:</b> {leader.exposure}
-          </p>
-        </div>
-        <div className="ls-stats">
-          <Bar label="SHEEP" value={bars(civ.base.sheep)} />
-          <Bar label="WHEAT" value={bars(civ.base.wheat)} />
-          <Bar label="WOOD" value={bars(civ.base.wood)} />
-          <Bar label="BRICK" value={bars(civ.base.brick)} />
-          <Bar label="ORE" value={bars(civ.base.ore)} />
-          <Bar label="POLLUTION" value={leader.pollution} tone="#b8a43e" />
-        </div>
-        <div className="ls-confirm">
-          <button className="primary" onClick={confirm}>
-            CONFIRM
-          </button>
-          <small>◀ ▶ BROWSE · ENTER PICK</small>
+
+        {/* Left: countdown + seats */}
+        <aside className="hs-left">
+          <h1>
+            SELECT
+            {picks.length < seats && (
+              <span
+                className={`hs-timer ${timer <= 5 ? "low" : ""}`}
+                aria-label={`${timer} seconds left`}
+              >
+                {timer}
+              </span>
+            )}
+          </h1>
+          <ol className="hs-seats" aria-label="Players">
+            {Array.from({ length: seats }, (_, seat) => {
+              const picked = picks[seat];
+              const pl = LEADERS.find((l) => l.civ === picked);
+              const active = seat === picks.length;
+              const face = pl ?? (active ? leader : undefined);
+              return (
+                <li
+                  key={seat}
+                  className={active ? "active" : ""}
+                  style={pl ? ({ "--civ": pl.color } as CSSProperties) : {}}
+                >
+                  <span className="hs-seat-face">
+                    {face && (
+                      <img
+                        src={`/assets/leaders/${face.sprite}-portrait.png`}
+                        alt=""
+                        className={pl ? "" : "dim"}
+                      />
+                    )}
+                  </span>
+                  <b>{playerName(seat)}</b>
+                  <small>
+                    {pl ? (
+                      <>
+                        {pl.title} <span className="hs-check">✔</span>
+                      </>
+                    ) : active ? (
+                      "choosing…"
+                    ) : (
+                      "waiting"
+                    )}
+                  </small>
+                </li>
+              );
+            })}
+          </ol>
           {children && (
             <button
-              className="ls-more-toggle"
+              className="hs-options-toggle"
               aria-expanded={more}
               aria-controls="ls-options"
               onClick={() => setMore(!more)}
             >
-              {more ? "CLOSE OPTIONS" : "OPTIONS"} ·{" "}
-              {mode === "solo" ? "SOLO" : "HOT-SEAT"}
+              OPTIONS · {mode === "solo" ? "SOLO" : "HOT-SEAT"}
             </button>
           )}
-        </div>
-      </section>
+          <p className="hs-keys">◀ ▶ BROWSE · ENTER LOCK IN</p>
+        </aside>
+
+        {/* Center: the highlighted leader on a floor plate */}
+        <section className="hs-stage" aria-live="polite">
+          <img
+            className="hs-hero"
+            src={`/assets/leaders/${leader.sprite}${talking ? "-talk" : ""}.png`}
+            width={leader.size[0] * SPRITE_SCALE}
+            height={leader.size[1] * SPRITE_SCALE}
+            alt={`${leader.title}, ${leader.role.toLowerCase()} of ${civ.name}`}
+          />
+          <div className="hs-floor" aria-hidden="true" />
+        </section>
+
+        {/* Bottom: one portrait tile per leader */}
+        <nav className="hs-roster" aria-label="Leaders">
+          {LEADERS.map((l, i) => {
+            const seat = takenBy(l.civ);
+            const taken = seat >= 0;
+            return (
+              <button
+                key={l.civ}
+                className={`hs-tile ${i === cursor ? "highlight" : ""} ${taken ? "taken" : ""}`}
+                aria-pressed={i === cursor}
+                aria-label={`${l.title}, ${CIVS[l.civ].name}${taken ? `, taken by ${playerName(seat)}` : ""}`}
+                onMouseEnter={() => setCursor(i)}
+                onFocus={() => setCursor(i)}
+                onClick={() => setCursor(i)}
+                onDoubleClick={() => lockIn(i)}
+              >
+                <img src={`/assets/leaders/${l.sprite}-portrait.png`} alt="" />
+                {taken && <span className="hs-taken">{playerName(seat)}</span>}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Right: stat card */}
+        <section className="hs-card" aria-label={`${leader.title} details`}>
+          <span className="hs-role">{leader.role}</span>
+          <h2
+            className={leader.title.length > 10 ? "long" : ""}
+            style={{ color: leader.color }}
+          >
+            {leader.title}
+          </h2>
+          <span className="hs-civ">{civ.name}</span>
+
+          <h3>STARTING RESOURCES</h3>
+          {RESOURCES.map((r) => {
+            const values = all((l) => startOf(l, r));
+            const max = Math.max(...values, 1);
+            const v = startOf(leader, r);
+            return (
+              <StatRow
+                key={r}
+                label={r.toUpperCase()}
+                value={v}
+                blocks={Math.round((v / max) * 5)}
+                color={leader.color}
+                icon={ICON_INDEX[r]}
+                mark={rank(values, cursor)}
+              />
+            );
+          })}
+          <StatRow
+            label="POLLUTION"
+            value={leader.pollution}
+            blocks={leader.pollution}
+            color="#a08a3a"
+            mark={rank(
+              all((l) => l.pollution),
+              cursor,
+              true,
+            )}
+          />
+          <StatRow
+            label="RESILIENCE"
+            value={leader.resilience}
+            blocks={leader.resilience}
+            color={leader.color}
+            mark={rank(
+              all((l) => l.resilience),
+              cursor,
+            )}
+          />
+          <p className="hs-exposed">
+            <b>Exposed:</b> {civ.weakness}
+          </p>
+          <button
+            className="hs-lock"
+            disabled={highlightTaken || picks.length >= seats}
+            onClick={() => lockIn()}
+          >
+            {highlightTaken
+              ? `TAKEN BY ${playerName(takenBy(leader.civ))}`
+              : "LOCK IN"}
+          </button>
+        </section>
+      </div>
 
       {children && more && (
         <>
