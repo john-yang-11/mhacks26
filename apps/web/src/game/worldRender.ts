@@ -10,9 +10,8 @@
  */
 import world from "../../../../src/data/worldmap.json";
 import { EVENTS } from "./content";
-import { spillTarget } from "./engine";
 import { OWNERS, TOWNS } from "./towns";
-import { CIV_IDS, type CivId, type GameState } from "./types";
+import { type CivId, type GameState } from "./types";
 
 export const MAP_W = world.w;
 export const MAP_H = world.h;
@@ -161,24 +160,23 @@ export function areaStatus(state?: GameState): AreaStatus[] {
     let damaged = 0;
     if (state && state.phase !== "ended") {
       const own = state.events[civ];
-      const avoided = state.phase === "build" && state.civs[civ].choice === 0;
+      const resolving = state.phase === "reaction" || state.phase === "build";
+      const avoided = resolving && state.civs[civ].choice === 0;
       if (own && !avoided) {
         effects.add(own.type);
         damaged = 1;
       }
-      // Hazards a neighbor's cheap choice pushed onto this region.
-      if (state.phase === "build")
-        for (const other of CIV_IDS) {
-          const e = EVENTS[state.events[other]?.type];
-          if (
-            other === civ ||
-            state.civs[other].choice !== 0 ||
-            !e?.cheap.spillTo
-          )
-            continue;
-          if (spillTarget(other, e.cheap.spillTo) === civ) {
-            effects.add(state.events[other].type);
-            damaged = 1;
+      // Pending and redirected cross-border effects preview where they will land.
+      if (resolving)
+        for (const effect of state.pendingEffects) {
+          const target =
+            effect.reaction?.kind === "redirect" && effect.reaction.redirectTo
+              ? effect.reaction.redirectTo
+              : effect.to;
+          if (target === civ) {
+            effects.add(effect.event);
+            damaged =
+              effect.reaction?.kind === "absorb" ? Math.max(damaged, 0.5) : 1;
           }
         }
     }

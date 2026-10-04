@@ -1,8 +1,16 @@
 import civData from "../../../../src/data/civs.json";
 import buildingData from "../../../../src/data/buildings.json";
 import eventData from "../../../../src/data/events.json";
+import reactionData from "../../../../src/data/reactions.json";
 import resourceData from "../../../../src/data/resources.json";
-import type { CivId, DisasterId, EventId, Resource, Stock } from "./types";
+import type {
+  CivId,
+  DisasterId,
+  EventId,
+  ReactionKind,
+  Resource,
+  Stock,
+} from "./types";
 
 export const stock = (values: Partial<Stock> = {}): Stock => ({
   sheep: 0,
@@ -92,3 +100,12 @@ export interface EventDef {
   source: string;
 }
 export const EVENTS = eventData as Record<EventId, EventDef>;
+
+export interface ReactionDef {
+  label: string;
+  description: string;
+  cost: Partial<Stock>;
+  lossMultiplier?: number;
+  incomePenalty?: number;
+}
+export const REACTIONS = reactionData as Record<ReactionKind, ReactionDef>;

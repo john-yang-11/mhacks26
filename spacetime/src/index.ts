@@ -10,6 +10,7 @@ import {
   answerQuiz,
   applyAction,
   createGame,
+  normalizeGameState,
 } from "../../apps/web/src/game/engine";
 import {
   type Action,
@@ -84,6 +85,17 @@ function validateAction(value: unknown, civ: CivId): Action {
   } else if (a.type === "choose") {
     if (![0, 1, 2].includes(a.option as number))
       throw new SenderError("Unknown option.");
+  } else if (a.type === "react") {
+    if (
+      typeof a.effectId !== "string" ||
+      a.effectId.length > 120 ||
+      !["absorb", "redirect", "embargo", "accept"].includes(a.kind as string)
+    )
+      throw new SenderError("Invalid reaction.");
+    if (a.redirectTo !== undefined && !CIV_IDS.includes(a.redirectTo as CivId))
+      throw new SenderError("Unknown redirect target.");
+    if (a.resource !== undefined && !RESOURCES.includes(a.resource as never))
+      throw new SenderError("Unknown embargo resource.");
   } else if (a.type === "build") {
     if (typeof a.building !== "string" || a.building.length > 40)
       throw new SenderError("Invalid building.");
@@ -134,7 +146,7 @@ export const joinWorld = database.reducer(
   { roomId: t.string(), civ: t.string() },
   (ctx, args) => {
     const row = getRoom(ctx, args.roomId),
-      state = JSON.parse(row.stateJson) as GameState;
+      state = normalizeGameState(JSON.parse(row.stateJson));
     if (state.mode === "solo" || state.round !== 1 || state.phase !== "event")
       throw new SenderError("This world is not accepting new players.");
     if (!CIV_IDS.includes(args.civ as CivId))
@@ -171,7 +183,10 @@ export const act = database.reducer(
       JSON.parse(args.actionJson),
       seat.civ as CivId,
     );
-    const result = applyAction(JSON.parse(row.stateJson), action);
+    const result = applyAction(
+      normalizeGameState(JSON.parse(row.stateJson)),
+      action,
+    );
     if (result.error) throw new SenderError(result.error);
     save(ctx, row, result.state);
   },
@@ -179,7 +194,7 @@ export const act = database.reducer(
 export const ready = database.reducer({ roomId: t.string() }, (ctx, args) => {
   const row = getRoom(ctx, args.roomId),
     seat = getSeat(ctx, row.id);
-  const result = applyAction(JSON.parse(row.stateJson), {
+  const result = applyAction(normalizeGameState(JSON.parse(row.stateJson)), {
     type: "ready",
     civ: seat.civ as CivId,
   });
@@ -195,7 +210,7 @@ export const advance = database.reducer({ roomId: t.string() }, (ctx, args) => {
   getSeat(ctx, row.id);
   if (!row.host.isEqual(ctx.sender))
     throw new SenderError("Only the host moves the world on.");
-  const state = JSON.parse(row.stateJson) as GameState;
+  const state = normalizeGameState(JSON.parse(row.stateJson));
   if (state.phase !== "event")
     throw new SenderError("Finish the current phase first.");
   save(ctx, row, advanceEvent(state));
@@ -205,7 +220,7 @@ export const beginQuestion = database.reducer(
   (ctx, args) => {
     const row = getRoom(ctx, args.roomId),
       seat = getSeat(ctx, row.id),
-      state = JSON.parse(row.stateJson) as GameState;
+      state = normalizeGameState(JSON.parse(row.stateJson));
     const quiz = state.civs[seat.civ as CivId].quiz;
     if (
       state.phase !== "quiz" ||
@@ -232,7 +247,7 @@ export const answer = database.reducer(
   (ctx, args) => {
     const row = getRoom(ctx, args.roomId),
       seat = getSeat(ctx, row.id),
-      state = JSON.parse(row.stateJson) as GameState;
+      state = normalizeGameState(JSON.parse(row.stateJson));
     const quiz = state.civs[seat.civ as CivId].quiz;
     if (
       state.phase !== "quiz" ||

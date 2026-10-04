@@ -10,13 +10,20 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import { BUILDINGS, CIVS, EVENTS, RESOURCE_META } from "@/game/content";
+import {
+  BUILDINGS,
+  CIVS,
+  EVENTS,
+  REACTIONS,
+  RESOURCE_META,
+} from "@/game/content";
 import {
   CLIMATE_LOSS,
   EXCHANGE_RATE,
   QUIZ_MS,
   ROUNDS,
   actionError,
+  activeEmbargoes,
   advance,
   answerQuiz,
   applyAction,
@@ -28,7 +35,11 @@ import {
   describe,
   greenCount,
   income,
+  legalRedirectTargets,
+  normalizeGameState,
+  pendingFor,
   questionFor,
+  reactionCost,
   responseTarget,
   score,
   spillTarget,
@@ -38,7 +49,9 @@ import {
   type Action,
   CIV_IDS,
   type CivId,
+  type EffectReaction,
   type GameState,
+  type PendingEffect,
   RESOURCES,
   type Resource,
   type Stock,
@@ -50,7 +63,8 @@ import LeaderSelect from "./LeaderSelect";
 import Narrator from "./Narrator";
 import WorldMap from "./WorldMap";
 
-const SAVE_KEY = "earthshare-v2";
+const SAVE_KEY = "earthshare-v3";
+const LEGACY_SAVE_KEY = "earthshare-v2";
 
 function Costs({ cost }: { cost: Partial<Stock> }) {
   const entries = RESOURCES.filter((r) => (cost[r] ?? 0) > 0);
@@ -85,9 +99,10 @@ export default function Game() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(SAVE_KEY);
+      const raw =
+        localStorage.getItem(SAVE_KEY) ?? localStorage.getItem(LEGACY_SAVE_KEY);
       if (raw) {
-        const s = JSON.parse(raw);
+        const s = normalizeGameState(JSON.parse(raw));
         if (validSave(s)) setResume(s);
       }
     } catch {}
@@ -120,6 +135,7 @@ export default function Game() {
       if (state.phase === "quiz") return civ.quiz?.option === undefined;
       if (state.phase === "response") return !civ.responded;
       if (state.phase === "choice") return civ.choice === undefined;
+      if (state.phase === "reaction") return pendingFor(state, c).length > 0;
       if (state.phase === "build") return !civ.ready;
       return false;
     });
@@ -174,7 +190,7 @@ export default function Game() {
     if (!file) return;
     try {
       if (file.size > 2_000_000) throw Error("Save is too large.");
-      const data = JSON.parse(await file.text());
+      const data = normalizeGameState(JSON.parse(await file.text()));
       if (!validSave(data)) throw Error("This is not a valid Earthshare save.");
       setState(data);
       setImportError("");
@@ -299,6 +315,7 @@ export default function Game() {
     quiz: "Quick question",
     response: "Your neighbor responds",
     choice: "Make your choice",
+    reaction: "The valley reacts",
     build: "Build your town",
     ended: "Your legacy",
   };
@@ -462,6 +479,28 @@ export default function Game() {
                   />
                 ))}
 
+              {state.phase === "reaction" &&
+                (pendingFor(state, civId)[0] ? (
+                  <ReactionBox
+                    key={pendingFor(state, civId)[0].id}
+                    state={state}
+                    civ={civId}
+                    effect={pendingFor(state, civId)[0]}
+                    onReact={(reaction) =>
+                      act({
+                        type: "react",
+                        civ: civId,
+                        effectId: pendingFor(state, civId)[0].id,
+                        kind: reaction.kind,
+                        redirectTo: reaction.redirectTo,
+                        resource: reaction.resource,
+                      })
+                    }
+                  />
+                ) : (
+                  waiting(true)
+                ))}
+
               {state.phase === "build" &&
                 (civ.ready ? (
                   waiting(true)
@@ -507,19 +546,31 @@ export default function Game() {
           <ClimateMeter state={state} />
         </div>
         <div className="resource-strip">
-          {RESOURCES.map((r) => (
-            <div key={r} className="resource">
-              <span className="resource-icon">{RESOURCE_META[r].icon}</span>
-              <div>
-                <small>{RESOURCE_META[r].name}</small>
-                <b>{civ.stock[r]}</b>
+          {RESOURCES.map((r) => {
+            const embargo = activeEmbargoes(state, civId).find(
+              (item) => item.resource === r,
+            );
+            return (
+              <div key={r} className="resource">
+                <span className="resource-icon">{RESOURCE_META[r].icon}</span>
+                <div>
+                  <small>{RESOURCE_META[r].name}</small>
+                  <b>{civ.stock[r]}</b>
+                </div>
+                <span
+                  className={embargo ? "negative" : "positive"}
+                  title={
+                    embargo
+                      ? `Embargoed by ${CIVS[embargo.by].name}: income reduced this decade`
+                      : "Gained every decade"
+                  }
+                >
+                  +{gain[r]}
+                  <small>{embargo ? "/decade · embargo" : "/decade"}</small>
+                </span>
               </div>
-              <span className="positive" title="Gained every decade">
-                +{gain[r]}
-                <small>/decade</small>
-              </span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       {toast && (
@@ -712,6 +763,100 @@ function NeighborResponse({
   );
 }
 
+function ReactionBox({
+  state,
+  civ,
+  effect,
+  onReact,
+}: {
+  state: GameState;
+  civ: CivId;
+  effect: PendingEffect;
+  onReact: (reaction: EffectReaction) => void;
+}) {
+  const targets = legalRedirectTargets(effect);
+  const [redirectTo, setRedirectTo] = useState<CivId | undefined>(targets[0]);
+  const [resource, setResource] = useState<Resource>("wheat");
+  const affordable = (kind: EffectReaction["kind"]) =>
+    canAfford(state.civs[civ].stock, reactionCost(kind));
+  return (
+    <Narrator
+      civ={civ}
+      className="narrator-docked reaction-dialogue"
+      eyebrow={`INCOMING · ${EVENTS[effect.event].name.toUpperCase()} FROM ${CIVS[effect.from].name.toUpperCase()}`}
+      lines={[
+        `${CIVS[effect.from].name} pushed ${describe(effect.loss)} toward ${townOf(civ).name}. Choose how we answer before the damage lands.`,
+      ]}
+      actions={
+        <div className="choice-cards reaction-cards">
+          <button
+            className="choice-card green"
+            disabled={!affordable("absorb")}
+            onClick={() => onReact({ kind: "absorb" })}
+          >
+            <small>MITIGATE</small>
+            <b>{REACTIONS.absorb.label}</b>
+            <Costs cost={reactionCost("absorb")} />
+            <span>{REACTIONS.absorb.description}</span>
+          </button>
+          <div className="choice-card reaction-option">
+            <small>REROUTE</small>
+            <b>{REACTIONS.redirect.label}</b>
+            <Costs cost={reactionCost("redirect")} />
+            {targets.length ? (
+              <select
+                aria-label="Redirect target"
+                value={redirectTo}
+                onChange={(event) => setRedirectTo(event.target.value as CivId)}
+              >
+                {targets.map((target) => (
+                  <option key={target} value={target}>
+                    {CIVS[target].name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <em>No legal route from here</em>
+            )}
+            <button
+              disabled={!redirectTo || !affordable("redirect")}
+              onClick={() => onReact({ kind: "redirect", redirectTo })}
+            >
+              Redirect effect
+            </button>
+          </div>
+          <div className="choice-card reaction-option embargo-option">
+            <small>RETALIATE</small>
+            <b>{REACTIONS.embargo.label}</b>
+            <Costs cost={reactionCost("embargo")} />
+            <select
+              aria-label="Resource to embargo"
+              value={resource}
+              onChange={(event) => setResource(event.target.value as Resource)}
+            >
+              {RESOURCES.map((item) => (
+                <option key={item} value={item}>
+                  {RESOURCE_META[item].name}
+                </option>
+              ))}
+            </select>
+            <button onClick={() => onReact({ kind: "embargo", resource })}>
+              Embargo {CIVS[effect.from].name}
+            </button>
+          </div>
+          <button
+            className="choice-brace"
+            onClick={() => onReact({ kind: "accept" })}
+          >
+            <b>{REACTIONS.accept.label}</b>
+            <span>{REACTIONS.accept.description}</span>
+          </button>
+        </div>
+      }
+    />
+  );
+}
+
 function BuildPanel({
   state,
   civ,
@@ -727,6 +872,13 @@ function BuildPanel({
   const [give, setGive] = useState<Resource>("brick");
   const [get, setGet] = useState<Resource>("wood");
   const buildable = Object.entries(BUILDINGS).filter(([, b]) => !b.earned);
+  const embargoes = activeEmbargoes(state, civ);
+  const exchangeError = actionError(state, {
+    type: "exchange",
+    civ,
+    give,
+    get,
+  });
   return (
     <section className="build-panel" aria-label="Build">
       <header>
@@ -737,6 +889,18 @@ function BuildPanel({
           End turn <ArrowRight size={16} />
         </button>
       </header>
+      {embargoes.length > 0 && (
+        <p className="embargo-warning" role="status">
+          Bank trade is blocked this decade.{" "}
+          {embargoes
+            .map(
+              (item) =>
+                `${CIVS[item.by].name} also reduced ${RESOURCE_META[item.resource].name} income`,
+            )
+            .join("; ")}
+          .
+        </p>
+      )}
       <div className="build-list">
         {buildable.map(([id, b]) => {
           const err = actionError(state, { type: "build", civ, building: id });
@@ -787,7 +951,8 @@ function BuildPanel({
           ))}
         </select>
         <button
-          disabled={!!actionError(state, { type: "exchange", civ, give, get })}
+          disabled={!!exchangeError}
+          title={exchangeError ?? "Exchange resources"}
           onClick={() => act({ type: "exchange", civ, give, get })}
         >
           Trade
@@ -832,6 +997,15 @@ function TownWindow({
       <p>
         <b>Makes each decade:</b> {describe(income(state, civ))}
       </p>
+      {activeEmbargoes(state, civ).map((embargo) => (
+        <p
+          key={`${embargo.by}:${embargo.resource}`}
+          className="embargo-warning"
+        >
+          <b>Embargo:</b> {CIVS[embargo.by].name} blocks bank exchange and
+          reduces {RESOURCE_META[embargo.resource].name} income this decade.
+        </p>
+      ))}
       <ul>
         {Object.entries(counts).map(([id, n]) => (
           <li key={id}>
@@ -955,6 +1129,11 @@ function Help({ onClose }: { onClose: () => void }) {
             halves the damage and builds lasting protection.
           </li>
           <li>
+            <b>React.</b> If a neighbor sends harm your way, absorb it, redirect
+            it along a legal route, retaliate with a one-decade embargo, or take
+            the full hit.
+          </li>
+          <li>
             <b>Build.</b> Spend sheep, wheat, wood, brick and ore to grow your
             town. Some buildings pollute; trees and windmills pull warming back.
             Trade 3:1 with the bank for what you lack.
@@ -976,7 +1155,7 @@ function validSave(value: unknown): value is GameState {
   if (!value || typeof value !== "object") return false;
   const s = value as GameState;
   return (
-    s.version === 2 &&
+    s.version === 3 &&
     Number.isInteger(s.round) &&
     s.round >= 1 &&
     s.round <= ROUNDS &&
@@ -984,9 +1163,17 @@ function validSave(value: unknown): value is GameState {
     Number.isFinite(s.climate) &&
     CIV_IDS.includes(s.player) &&
     ["solo", "hotseat"].includes(s.mode) &&
-    ["event", "quiz", "response", "choice", "build", "ended"].includes(
-      s.phase,
-    ) &&
+    [
+      "event",
+      "quiz",
+      "response",
+      "choice",
+      "reaction",
+      "build",
+      "ended",
+    ].includes(s.phase) &&
+    Array.isArray(s.pendingEffects) &&
+    Array.isArray(s.embargoes) &&
     Array.isArray(s.humans) &&
     CIV_IDS.every(
       (id) =>

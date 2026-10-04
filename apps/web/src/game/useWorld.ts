@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DbConnection } from "@/module_bindings";
 import type { Action, CivId, GameState } from "./types";
+import { normalizeGameState } from "./engine";
 
 /** The subscription is the sole source of state for an online world. */
 export function useWorld(onState: (state: GameState) => void) {
@@ -58,7 +59,7 @@ export function useWorld(onState: (state: GameState) => void) {
               setRevision(row.revision);
               setRoomId(id);
               setStatus("Live · SpacetimeDB");
-              callback.current(JSON.parse(row.stateJson) as GameState);
+              callback.current(normalizeGameState(JSON.parse(row.stateJson)));
             };
             conn.db.room.onInsert(sync);
             conn.db.room.onUpdate(sync);

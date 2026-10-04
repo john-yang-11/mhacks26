@@ -28,7 +28,7 @@ Open http://127.0.0.1:3000. The frontend defaults to `ws://127.0.0.1:3001` and l
 
 The root database scripts use the same Node launcher on macOS and Windows, keep local data and publisher identity under ignored `.tools/`, and require CLI version 2.10.2. Use `spacetime login` only when publishing to Maincloud; never put publisher credentials in browser environment variables.
 
-The host advances the opening event narration. Each player answers their own server-timed quiz, hears the neighbor response, chooses, builds and ends their turn; shared phases wait for every claimed seat while unclaimed towns use AI. To reconnect, use the same browser and room code: the SDK identity is retained locally. A different browser profile is a different player. For multiple computers, use a reachable backend URL as described below.
+The host advances the opening event narration. Each player answers their own server-timed quiz, hears the neighbor response, chooses, reacts to incoming harm, builds and ends their turn; shared phases wait for every claimed seat while unclaimed towns use AI. To reconnect, use the same browser and room code: the SDK identity is retained locally. A different browser profile is a different player. For multiple computers, use a reachable backend URL as described below.
 
 ## Core decade loop
 
@@ -36,8 +36,9 @@ The host advances the opening event narration. Each player answers their own ser
 2. **Advisor quiz:** the town's advisor asks one sourced 20-second question. A correct answer reduces every listed resource loss by one.
 3. **Neighbor response:** the affected neighbor explains how the carrier—river, wind, coast, fault or shared network—connects the towns. Live and hot-seat games wait until every human has heard this response.
 4. **Management choice:** a cheap response prevents local loss but moves damage to a neighbor or increases warming; a sustainable response costs more, halves current loss and earns a permanent mitigation; bracing takes the full loss.
-5. **Resolution and build:** all choices resolve together, reports name sources and victims, then towns build or exchange resources at 3:1.
-6. **Next decade:** production is collected, building emissions change warming, new events roll, and the game ends after ten decades or immediately at +3°C.
+5. **Reaction:** a town receiving harm can pay to absorb half, redirect it along the next legal route, accept it, or take the hit and embargo its source. An embargo blocks bank exchange and reduces one selected resource income for that decade.
+6. **Resolution and build:** reactions resolve in stable order, reports name sources and final victims, then towns build or exchange resources at 3:1 unless embargoed.
+7. **Next decade:** production is collected, embargoes expire, building emissions change warming, new events roll, and the game ends after ten decades or immediately at +3°C.
 
 ## Verify
 

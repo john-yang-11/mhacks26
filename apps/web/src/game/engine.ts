@@ -8,11 +8,12 @@
  *   response — an affected neighbor explains how the player's decision reaches them
  *   choice — cheap now (pollutes, or pushes the damage onto a neighbor) vs sustainable
  *            (costs more, protects you from then on)
+ *   reaction — victims absorb, redirect, embargo the source, or take each incoming effect
  *   build  — spend sheep, wheat, wood, brick and ore; then end the turn
  * After 10 cycles, or once warming reaches +3°C, the game ends.
  */
 import { clone } from "./clone";
-import { BUILDINGS, CIVS, EVENTS, stock } from "./content";
+import { BUILDINGS, CIVS, EVENTS, REACTIONS, stock } from "./content";
 import { QUESTIONS } from "./questions";
 import {
   CIV_IDS,
@@ -22,7 +23,9 @@ import {
   type CivId,
   type EventId,
   type GameState,
+  type PendingEffect,
   type Question,
+  type ReactionKind,
   type Resource,
   type Stock,
 } from "./types";
@@ -33,6 +36,21 @@ export const QUIZ_MS = 20_000;
 export const EXCHANGE_RATE = 3;
 const CLIMATE_DRIFT = 0.05;
 const START_CLIMATE = 0.4;
+
+/** Upgrade persisted version-2 worlds without changing their current phase or outcomes. */
+export function normalizeGameState(value: unknown): GameState {
+  if (!value || typeof value !== "object") return value as GameState;
+  const s = clone(value as GameState);
+  const legacy = s as GameState & {
+    version: number;
+    pendingEffects?: PendingEffect[];
+    embargoes?: GameState["embargoes"];
+  };
+  legacy.version = 3;
+  legacy.pendingEffects ??= [];
+  legacy.embargoes ??= [];
+  return legacy;
+}
 
 // ---------- geography: who your choices land on ----------
 export const DOWNSTREAM: Record<CivId, CivId[]> = {
@@ -119,6 +137,28 @@ export function responseTarget(s: GameState, civ: CivId): CivId {
   return SHARED[civ];
 }
 
+export function legalRedirectTargets(
+  effect: Pick<PendingEffect, "from" | "to" | "route">,
+): CivId[] {
+  const next =
+    effect.route === "downstream"
+      ? DOWNSTREAM[effect.to][0]
+      : effect.route === "downwind"
+        ? DOWNWIND[effect.to]
+        : SHARED[effect.to];
+  return next && next !== effect.from && next !== effect.to ? [next] : [];
+}
+
+export const pendingFor = (s: GameState, civ: CivId) =>
+  s.pendingEffects.filter((effect) => effect.to === civ && !effect.reaction);
+
+export const activeEmbargoes = (s: GameState, civ: CivId) =>
+  s.embargoes.filter(
+    (embargo) => embargo.on === civ && embargo.round === s.round,
+  );
+
+export const reactionCost = (kind: ReactionKind) => REACTIONS[kind].cost;
+
 // ---------- setup ----------
 export function createGame(
   player: CivId = "heartland",
@@ -140,7 +180,7 @@ export function createGame(
     ]),
   ) as unknown as Record<CivId, Civ>;
   const s: GameState = {
-    version: 2,
+    version: 3,
     seed,
     rng: seed >>> 0,
     round: 1,
@@ -153,6 +193,8 @@ export function createGame(
     climate: START_CLIMATE,
     history: [{ round: 0, climate: START_CLIMATE }],
     news: [],
+    pendingEffects: [],
+    embargoes: [],
   };
   rollEvents(s);
   return s;
@@ -274,6 +316,29 @@ export function actionError(s: GameState, a: Action): string | null {
       return "You can't afford that option.";
     return null;
   }
+  if (a.type === "react") {
+    if (s.phase !== "reaction")
+      return "There is no incoming effect to react to.";
+    const effect = s.pendingEffects.find((item) => item.id === a.effectId);
+    if (!effect) return "That incoming effect no longer exists.";
+    if (effect.to !== a.civ) return "Only the affected town can react.";
+    if (effect.reaction) return "You already reacted to that effect.";
+    if (!["absorb", "redirect", "embargo", "accept"].includes(a.kind))
+      return "Unknown reaction.";
+    if (!canAfford(civ.stock, reactionCost(a.kind)))
+      return "You cannot afford that reaction.";
+    if (a.kind === "redirect") {
+      if (!a.redirectTo) return "Choose where to redirect the effect.";
+      if (!legalRedirectTargets(effect).includes(a.redirectTo))
+        return "That effect cannot be redirected there.";
+    }
+    if (
+      a.kind === "embargo" &&
+      (!a.resource || !RESOURCES.includes(a.resource))
+    )
+      return "Choose a resource for the embargo.";
+    return null;
+  }
   if (s.phase !== "build") return "It isn't time to build.";
   if (civ.ready) return "Your turn is already over.";
   if (a.type === "build") {
@@ -285,6 +350,8 @@ export function actionError(s: GameState, a: Action): string | null {
     return null;
   }
   if (a.type === "exchange") {
+    if (activeEmbargoes(s, a.civ).length)
+      return "An embargo blocks bank exchange for this decade.";
     if (a.give === a.get) return "Pick two different resources.";
     if (civ.stock[a.give] < EXCHANGE_RATE)
       return `You need ${EXCHANGE_RATE} ${a.give} to exchange.`;
@@ -305,6 +372,14 @@ export function applyAction(
   } else if (a.type === "choose") {
     pay(civ.stock, choiceCost(s, a.civ, a.option));
     civ.choice = a.option;
+  } else if (a.type === "react") {
+    pay(civ.stock, reactionCost(a.kind));
+    const effect = s.pendingEffects.find((item) => item.id === a.effectId)!;
+    effect.reaction = {
+      kind: a.kind,
+      redirectTo: a.kind === "redirect" ? a.redirectTo : undefined,
+      resource: a.kind === "embargo" ? a.resource : undefined,
+    };
   } else if (a.type === "build") {
     pay(civ.stock, BUILDINGS[a.building].cost);
     civ.buildings.push(a.building);
@@ -337,7 +412,14 @@ export function progress(state: GameState): GameState {
     for (const c of bots(s))
       if (s.civs[c].choice === undefined) botChoice(s, c);
     if (CIV_IDS.every((c) => s.civs[c].choice !== undefined)) {
-      resolveEvents(s);
+      prepareResolution(s);
+      s.phase = "reaction";
+    }
+  }
+  if (s.phase === "reaction") {
+    for (const c of bots(s)) botReact(s, c);
+    if (s.pendingEffects.every((effect) => effect.reaction)) {
+      resolvePendingEffects(s);
       for (const c of bots(s)) botBuild(s, c);
       s.phase = "build";
     }
@@ -347,14 +429,9 @@ export function progress(state: GameState): GameState {
   return s;
 }
 
-/** Apply this cycle's events: quiz and choice soften the losses; cheap choices land on neighbors. */
-function resolveEvents(s: GameState) {
-  const spills: {
-    from: CivId;
-    to: CivId;
-    loss: Partial<Stock>;
-    event: EventId;
-  }[] = [];
+/** Apply local event losses and expose cross-border effects for the victims to answer. */
+function prepareResolution(s: GameState) {
+  s.pendingEffects = [];
   for (const c of CIV_IDS) {
     const civ = s.civs[c];
     const ev = s.events[c];
@@ -376,9 +453,16 @@ function resolveEvents(s: GameState) {
       s.climate += e.cheap.climate ?? 0;
       if (e.cheap.spillTo && e.cheap.spill) {
         const to = spillTarget(c, e.cheap.spillTo);
-        spills.push({ from: c, to, loss: e.cheap.spill, event: ev.type });
+        s.pendingEffects.push({
+          id: `${s.round}:${c}:${to}:${ev.type}:${s.pendingEffects.length}`,
+          from: c,
+          to,
+          route: e.cheap.spillTo,
+          loss: { ...e.cheap.spill },
+          event: ev.type,
+        });
         report.push(
-          `${e.cheap.label}: no losses here, but ${CIVS[to].name} takes ${describe(e.cheap.spill)}.`,
+          `${e.cheap.label}: no losses here; ${CIVS[to].name} must answer ${describe(e.cheap.spill)} moving their way.`,
         );
       } else if (e.cheap.climate)
         report.push(
@@ -400,13 +484,57 @@ function resolveEvents(s: GameState) {
       text: `${CIVS[c].name}: ${e.name.toLowerCase()} arrived by ${e.carrier}${ev.cause ? ` from ${CIVS[ev.cause].name}` : ""}; lost ${describe(taken)}.`,
     });
   }
-  for (const sp of spills) {
-    const taken = lose(s.civs[sp.to].stock, sp.loss);
-    const line = `${CIVS[sp.from].name} pushed their ${EVENTS[sp.event].name.toLowerCase()} onto us: we lost ${describe(taken)}.`;
-    s.civs[sp.to].report.push(line);
-    s.news.push({ round: s.round, civ: sp.to, text: line });
-  }
   s.climate = round2(Math.max(0, s.climate));
+}
+
+/** Apply each victim's reaction, then land the conserved effect on its final target. */
+function resolvePendingEffects(s: GameState) {
+  for (const effect of [...s.pendingEffects].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  )) {
+    const reaction = effect.reaction ?? { kind: "accept" as const };
+    const target =
+      reaction.kind === "redirect" && reaction.redirectTo
+        ? reaction.redirectTo
+        : effect.to;
+    const loss =
+      reaction.kind === "absorb" ? halve(effect.loss) : { ...effect.loss };
+    if (reaction.kind === "embargo" && reaction.resource) {
+      const embargo = {
+        by: effect.to,
+        on: effect.from,
+        resource: reaction.resource,
+        round: s.round,
+      };
+      if (
+        !s.embargoes.some(
+          (item) =>
+            item.by === embargo.by &&
+            item.on === embargo.on &&
+            item.resource === embargo.resource &&
+            item.round === embargo.round,
+        )
+      )
+        s.embargoes.push(embargo);
+    }
+    if (reaction.kind === "redirect" && target !== effect.to) {
+      const redirectLine = `${CIVS[effect.to].name} redirected ${EVENTS[effect.event].name.toLowerCase()} toward ${CIVS[target].name}.`;
+      s.civs[effect.to].report.push(redirectLine);
+      s.news.push({ round: s.round, civ: effect.to, text: redirectLine });
+    }
+    const taken = lose(s.civs[target].stock, loss);
+    const reactionText =
+      reaction.kind === "absorb"
+        ? " We absorbed part of it."
+        : reaction.kind === "embargo"
+          ? ` We embargoed ${CIVS[effect.from].name}'s ${reaction.resource} income and bank trade.`
+          : reaction.kind === "redirect"
+            ? ` It was redirected by ${CIVS[effect.to].name}.`
+            : "";
+    const line = `${CIVS[effect.from].name} pushed their ${EVENTS[effect.event].name.toLowerCase()} onto ${CIVS[target].name}: lost ${describe(taken)}.${reactionText}`;
+    s.civs[target].report.push(line);
+    s.news.push({ round: s.round, civ: target, text: line });
+  }
 }
 
 /** Production, pollution, then the next cycle's events (or the end of the game). */
@@ -427,6 +555,11 @@ export function income(s: GameState, c: CivId): Stock {
   const out = stock(CIVS[c].base);
   for (const b of s.civs[c].buildings)
     for (const r of RESOURCES) out[r] += BUILDINGS[b]?.yields?.[r] ?? 0;
+  for (const embargo of activeEmbargoes(s, c))
+    out[embargo.resource] = Math.max(
+      0,
+      out[embargo.resource] - (REACTIONS.embargo.incomePenalty ?? 1),
+    );
   return out;
 }
 function endCycle(state: GameState): GameState {
@@ -435,6 +568,7 @@ function endCycle(state: GameState): GameState {
     const add = income(s, c);
     for (const r of RESOURCES) s.civs[c].stock[r] += add[r];
   }
+  s.embargoes = s.embargoes.filter((embargo) => embargo.round > s.round);
   s.climate = round2(Math.max(0, s.climate + cycleClimate(s)));
   s.history.push({ round: s.round, climate: s.climate });
   if (s.climate >= CLIMATE_LOSS || s.round >= ROUNDS) {
@@ -450,6 +584,7 @@ function endCycle(state: GameState): GameState {
     civ.choice = undefined;
     civ.ready = false;
   }
+  s.pendingEffects = [];
   rollEvents(s);
   s.phase = "event";
   return s;
@@ -533,6 +668,35 @@ function botChoice(s: GameState, c: CivId) {
       return;
     }
 }
+function botReact(s: GameState, c: CivId) {
+  for (const effect of pendingFor(s, c)) {
+    const civ = s.civs[c];
+    const redirects = legalRedirectTargets(effect);
+    let kind: ReactionKind = "accept";
+    let redirectTo: CivId | undefined;
+    let resource: Resource | undefined;
+    const roll = random(s);
+    if (roll < 0.45 && canAfford(civ.stock, reactionCost("absorb")))
+      kind = "absorb";
+    else if (
+      roll < 0.65 &&
+      redirects.length &&
+      canAfford(civ.stock, reactionCost("redirect"))
+    ) {
+      kind = "redirect";
+      redirectTo = redirects[0];
+    } else if (roll < 0.85) {
+      kind = "embargo";
+      resource = RESOURCES.reduce((best, item) =>
+        income(s, effect.from)[item] > income(s, effect.from)[best]
+          ? item
+          : best,
+      );
+    }
+    pay(civ.stock, reactionCost(kind));
+    effect.reaction = { kind, redirectTo, resource };
+  }
+}
 function botBuild(s: GameState, c: CivId) {
   const civ = s.civs[c];
   for (let n = 0; n < 3; n++) {
@@ -554,7 +718,11 @@ function botBuild(s: GameState, c: CivId) {
       const spare = RESOURCES.filter((r) => r !== need).sort(
         (a, b) => civ.stock[b] - civ.stock[a],
       )[0];
-      if (need && civ.stock[spare] >= EXCHANGE_RATE + (goal[spare] ?? 0)) {
+      if (
+        !activeEmbargoes(s, c).length &&
+        need &&
+        civ.stock[spare] >= EXCHANGE_RATE + (goal[spare] ?? 0)
+      ) {
         civ.stock[spare] -= EXCHANGE_RATE;
         civ.stock[need] += 1;
         id = BUILD_ORDER[c].find((b) => canBuild(civ, b));

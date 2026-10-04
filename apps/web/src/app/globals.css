@@ -4525,6 +4525,35 @@ svg image {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
+.reaction-cards .reaction-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+}
+.reaction-option select,
+.reaction-option button {
+  min-height: 44px;
+  font-family: "VT323", monospace;
+  font-size: 19px;
+}
+.reaction-option select {
+  border: 3px solid #5e3c20;
+  background: #f7d9a0;
+  color: #2a1a0e;
+  padding: 7px;
+}
+.embargo-option {
+  border-color: #8c2929;
+}
+.embargo-warning {
+  border: 3px solid #8c2929;
+  background: #f7d9a0;
+  color: #4a160e;
+  padding: 8px 12px;
+  font-family: "VT323", monospace;
+  font-size: 20px;
+}
 .choice-card {
   display: flex;
   flex-direction: column;

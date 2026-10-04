@@ -33,10 +33,35 @@ export type EventId = DisasterId;
 
 /**
  * Each cycle: the event is told → everyone answers a quiz → an affected neighbor responds
- * → everyone makes a choice (cheap vs sustainable) → everyone builds → the cycle ends.
+ * → everyone makes a choice (cheap vs sustainable) → victims react to incoming effects
+ * → everyone builds → the cycle ends.
  */
 export type Phase =
-  "event" | "quiz" | "response" | "choice" | "build" | "ended";
+  "event" | "quiz" | "response" | "choice" | "reaction" | "build" | "ended";
+
+export type ReactionKind = "absorb" | "redirect" | "embargo" | "accept";
+export interface EffectReaction {
+  kind: ReactionKind;
+  redirectTo?: CivId;
+  resource?: Resource;
+}
+export interface PendingEffect {
+  id: string;
+  from: CivId;
+  /** The civilization that has the right to react. */
+  to: CivId;
+  event: EventId;
+  route: "downstream" | "downwind" | "shared";
+  loss: Partial<Stock>;
+  reaction?: EffectReaction;
+}
+export interface Embargo {
+  by: CivId;
+  on: CivId;
+  resource: Resource;
+  /** The decade in which bank trade and income are restricted. */
+  round: number;
+}
 
 export interface CycleEvent {
   type: EventId;
@@ -72,7 +97,7 @@ export interface News {
   text: string;
 }
 export interface GameState {
-  version: 2;
+  version: 3;
   seed: number;
   rng: number;
   round: number;
@@ -86,12 +111,24 @@ export interface GameState {
   climate: number;
   history: { round: number; climate: number }[];
   news: News[];
+  /** Cross-border effects waiting for their victims during the reaction phase. */
+  pendingEffects: PendingEffect[];
+  /** Retaliatory restrictions active for one decade. */
+  embargoes: Embargo[];
   outcome?: "collapse" | "survived";
 }
 
 export type Action =
   | { type: "acknowledge"; civ: CivId }
   | { type: "choose"; civ: CivId; option: 0 | 1 | 2 }
+  | {
+      type: "react";
+      civ: CivId;
+      effectId: string;
+      kind: ReactionKind;
+      redirectTo?: CivId;
+      resource?: Resource;
+    }
   | { type: "build"; civ: CivId; building: string }
   | { type: "exchange"; civ: CivId; give: Resource; get: Resource }
   | { type: "ready"; civ: CivId };

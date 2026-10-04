@@ -4,6 +4,7 @@ import {
   advance,
   applyAction,
   createGame,
+  pendingFor,
   questionFor,
   answerQuiz,
 } from "../src/game/engine";
@@ -39,7 +40,17 @@ function withEvent(civ: CivId, type: EventId) {
   const q = questionFor(s, "heartland")!;
   s = answerQuiz(s, "heartland", q.correct, 1000);
   s = applyAction(s, { type: "acknowledge", civ: "heartland" }).state;
-  return applyAction(s, { type: "choose", civ: "heartland", option: 2 }).state;
+  s = applyAction(s, { type: "choose", civ: "heartland", option: 2 }).state;
+  while (s.phase === "reaction" && pendingFor(s, "heartland")[0]) {
+    const effect = pendingFor(s, "heartland")[0];
+    s = applyAction(s, {
+      type: "react",
+      civ: "heartland",
+      effectId: effect.id,
+      kind: "accept",
+    }).state;
+  }
+  return s;
 }
 
 test("world layers decode to a full 320x200 map with one town per civilization", () => {
@@ -92,6 +103,28 @@ test("all 16 event ids reach the live map status", () => {
     const state = withEvent("heartland", id);
     assert(areaStatus(state)[townIndex("heartland")].effects.has(id), id);
   }
+});
+
+test("pending and redirected effects preview their final map region", () => {
+  const state = createGame("heartland", "hotseat", 21);
+  state.phase = "reaction";
+  state.pendingEffects = [
+    {
+      id: "preview",
+      from: "heartland",
+      to: "enclave",
+      event: "flood",
+      route: "downstream",
+      loss: { wheat: 2 },
+    },
+  ];
+  assert(areaStatus(state)[townIndex("enclave")].effects.has("flood"));
+  state.pendingEffects[0].reaction = {
+    kind: "redirect",
+    redirectTo: "archipelago",
+  };
+  assert(!areaStatus(state)[townIndex("enclave")].effects.has("flood"));
+  assert(areaStatus(state)[townIndex("archipelago")].effects.has("flood"));
 });
 
 test("each visual effect family changes map pixels", () => {

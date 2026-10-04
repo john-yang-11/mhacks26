@@ -11,6 +11,9 @@ import {
   autoplay,
   createGame,
   income,
+  legalRedirectTargets,
+  normalizeGameState,
+  pendingFor,
   progress,
   questionFor,
   rollEvents,
@@ -44,6 +47,29 @@ const rich = (s: GameState, c: CivId = P) => {
   for (const r of RESOURCES) s.civs[c].stock[r] = 20;
   return s;
 };
+function acceptIncoming(s: GameState, civ: CivId = P) {
+  while (s.phase === "reaction" && pendingFor(s, civ)[0]) {
+    const effect = pendingFor(s, civ)[0];
+    s = applyAction(s, {
+      type: "react",
+      civ,
+      effectId: effect.id,
+      kind: "accept",
+    }).state;
+  }
+  return s;
+}
+function atReaction(event: EventId = "flood") {
+  const s = createGame(P, "hotseat", 99);
+  for (const civ of CIV_IDS) {
+    rich(s, civ);
+    s.civs[civ].choice = 2;
+  }
+  s.events[P] = { type: event, loss: { ...EVENTS[event].loss } };
+  s.phase = "choice";
+  s.civs[P].choice = undefined;
+  return applyAction(s, { type: "choose", civ: P, option: 0 }).state;
+}
 
 test("games are deterministic for a seed", () => {
   assert.deepEqual(
@@ -102,7 +128,7 @@ test("warming increases only climate-driven event severity and frequency", () =>
   assert(checkedComparable > 500);
 });
 
-test("one cycle runs event → quiz → response → choice → build → next decade", () => {
+test("one cycle runs event → quiz → response → choice → reaction → build → next decade", () => {
   let s = createGame(P, "solo", 3);
   assert.equal(s.phase, "event");
   s = advance(s);
@@ -113,6 +139,7 @@ test("one cycle runs event → quiz → response → choice → build → next d
   s = hearNeighbor(s);
   assert.equal(s.phase, "choice", "AI neighbors acknowledge on their own");
   s = applyAction(s, { type: "choose", civ: P, option: 2 }).state;
+  if (s.phase === "reaction") s = acceptIncoming(s);
   assert.equal(s.phase, "build");
   assert(s.civs[P].report.length > 0, "the narrator has a report to read");
   const before = { ...s.civs[P].stock };
@@ -134,12 +161,17 @@ test("a right answer means smaller losses than a wrong one", () => {
 });
 
 test("the cheap choice pushes the damage onto a neighbor", () => {
-  let s = rich(atQuiz("flood"));
-  s = hearNeighbor(answer(s, false));
+  let s = atReaction("flood");
   const target = spillTarget(P, "downstream");
-  rich(s, target);
   const before = total(s, target);
-  s = applyAction(s, { type: "choose", civ: P, option: 0 }).state;
+  const effect = s.pendingEffects.find((item) => item.to === target)!;
+  assert.equal(s.phase, "reaction");
+  s = applyAction(s, {
+    type: "react",
+    civ: target,
+    effectId: effect.id,
+    kind: "accept",
+  }).state;
   assert(
     s.civs[target].report.some((l) => l.includes("pushed")),
     "the neighbor is told who did it",
@@ -157,6 +189,7 @@ test("the sustainable choice halves damage and builds lasting protection", () =>
 test("building checks cost and caps; the bank trades 3:1", () => {
   let s = hearNeighbor(answer(rich(atQuiz("flood")), true));
   s = applyAction(s, { type: "choose", civ: P, option: 2 }).state;
+  s = acceptIncoming(s);
   for (let i = 0; i < BUILDINGS.kiln.max!; i++)
     s = applyAction(s, { type: "build", civ: P, building: "kiln" }).state;
   assert.match(
@@ -185,6 +218,7 @@ test("you can't act out of turn", () => {
 test("warming past +3°C ends the game for everyone", () => {
   let s = hearNeighbor(answer(atQuiz("flood"), true));
   s = applyAction(s, { type: "choose", civ: P, option: 2 }).state;
+  s = acceptIncoming(s);
   s.climate = CLIMATE_LOSS + 0.5;
   s = applyAction(s, { type: "ready", civ: P }).state;
   assert.equal(s.phase, "ended");
@@ -238,6 +272,114 @@ test("the response phase waits for every hot-seat player", () => {
     civ: CIV_IDS[CIV_IDS.length - 1],
   }).state;
   assert.equal(s.phase, "choice");
+});
+
+test("victims can absorb incoming losses at the configured cost", () => {
+  let s = atReaction("flood");
+  const effect = s.pendingEffects[0];
+  effect.loss = { wheat: 4 };
+  const beforeWheat = s.civs[effect.to].stock.wheat;
+  const beforeBrick = s.civs[effect.to].stock.brick;
+  s = applyAction(s, {
+    type: "react",
+    civ: effect.to,
+    effectId: effect.id,
+    kind: "absorb",
+  }).state;
+  assert.equal(s.phase, "build");
+  assert.equal(s.civs[effect.to].stock.wheat, beforeWheat - 2);
+  assert.equal(s.civs[effect.to].stock.brick, beforeBrick - 1);
+});
+
+test("victims can redirect an effect only along its next legal route", () => {
+  let s = atReaction("flood");
+  const effect = s.pendingEffects[0];
+  const target = legalRedirectTargets(effect)[0];
+  assert(target, "flood should have a downstream redirect");
+  const originalWheat = s.civs[effect.to].stock.wheat;
+  const redirectedWheat = s.civs[target].stock.wheat;
+  assert(
+    applyAction(s, {
+      type: "react",
+      civ: effect.to,
+      effectId: effect.id,
+      kind: "redirect",
+      redirectTo: effect.from,
+    }).error,
+  );
+  s = applyAction(s, {
+    type: "react",
+    civ: effect.to,
+    effectId: effect.id,
+    kind: "redirect",
+    redirectTo: target,
+  }).state;
+  assert.equal(s.civs[effect.to].stock.wheat, originalWheat);
+  assert(s.civs[target].stock.wheat < redirectedWheat);
+});
+
+test("multiple incoming effects wait for a reaction in stable order", () => {
+  let s = atReaction("flood");
+  const first = s.pendingEffects[0];
+  s.pendingEffects.push({
+    ...first,
+    id: `${first.id}:second`,
+    from: "petrostate",
+  });
+  s = applyAction(s, {
+    type: "react",
+    civ: first.to,
+    effectId: first.id,
+    kind: "accept",
+  }).state;
+  assert.equal(s.phase, "reaction");
+  assert.equal(pendingFor(s, first.to)[0].id, `${first.id}:second`);
+  s = applyAction(s, {
+    type: "react",
+    civ: first.to,
+    effectId: `${first.id}:second`,
+    kind: "accept",
+  }).state;
+  assert.equal(s.phase, "build");
+});
+
+test("an embargo blocks exchange, reduces income, and expires next decade", () => {
+  let s = atReaction("flood");
+  const effect = s.pendingEffects[0];
+  const baseline = income(s, effect.from).wheat;
+  s = applyAction(s, {
+    type: "react",
+    civ: effect.to,
+    effectId: effect.id,
+    kind: "embargo",
+    resource: "wheat",
+  }).state;
+  assert.equal(income(s, effect.from).wheat, Math.max(0, baseline - 1));
+  assert.match(
+    applyAction(s, {
+      type: "exchange",
+      civ: effect.from,
+      give: "sheep",
+      get: "ore",
+    }).error ?? "",
+    /embargo/i,
+  );
+  for (const civ of CIV_IDS) s = applyAction(s, { type: "ready", civ }).state;
+  assert.equal(s.round, 2);
+  assert.equal(s.embargoes.length, 0);
+});
+
+test("version-2 saves gain reaction fields without losing progress", () => {
+  const original = createGame(P, "solo", 77);
+  const legacy = JSON.parse(JSON.stringify(original));
+  legacy.version = 2;
+  delete legacy.pendingEffects;
+  delete legacy.embargoes;
+  const migrated = normalizeGameState(legacy);
+  assert.equal(migrated.version, 3);
+  assert.deepEqual(migrated.pendingEffects, []);
+  assert.deepEqual(migrated.embargoes, []);
+  assert.equal(migrated.round, original.round);
 });
 
 test("content is consistent", () => {

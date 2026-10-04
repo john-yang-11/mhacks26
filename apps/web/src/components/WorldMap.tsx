@@ -1,9 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { CIVS, EVENTS } from "@/game/content";
-import { spillTarget } from "@/game/engine";
 import { OWNERS, TOWNS, townOf } from "@/game/towns";
-import { CIV_IDS, type CivId, type GameState } from "@/game/types";
+import { type CivId, type GameState } from "@/game/types";
 import { MAP_H, MAP_W, renderWorld } from "@/game/worldRender";
 
 const FPS = 6;
@@ -58,14 +57,19 @@ export default function WorldMap({
 }) {
   const [zoom, setZoom] = useState(1);
   const [arrows, setArrows] = useState(true);
-  // Cheap choices push damage onto a neighbor: draw that as an arrow between towns.
+  // Pending effects and their chosen redirects are drawn before they land.
   const spills =
-    state.phase === "build"
-      ? CIV_IDS.flatMap((from) => {
-          const e = EVENTS[state.events[from].type];
-          if (state.civs[from].choice !== 0 || !e.cheap.spillTo) return [];
-          return [{ from, to: spillTarget(from, e.cheap.spillTo), e }];
-        })
+    state.phase === "reaction" || state.phase === "build"
+      ? state.pendingEffects.map((effect) => ({
+          id: effect.id,
+          from: effect.from,
+          to:
+            effect.reaction?.kind === "redirect" && effect.reaction.redirectTo
+              ? effect.reaction.redirectTo
+              : effect.to,
+          originalTo: effect.to,
+          e: EVENTS[effect.event],
+        }))
       : [];
   return (
     <div className="map-shell pixel-map">
@@ -91,11 +95,11 @@ export default function WorldMap({
             </marker>
           </defs>
           {arrows &&
-            spills.map(({ from, to, e }, i) => {
+            spills.map(({ id, from, to, originalTo, e }, i) => {
               const [x, y] = keep(from),
                 [tx, ty] = keep(to);
               return (
-                <g key={from}>
+                <g key={id}>
                   <path
                     className="province-flow"
                     d={`M${x} ${y} Q${(x + tx) / 2 + 40 + i * 20} ${(y + ty) / 2 - 60} ${tx} ${ty}`}
@@ -106,7 +110,9 @@ export default function WorldMap({
                     markerEnd="url(#flow-tip)"
                   />
                   <title>
-                    {`${CIVS[from].name} chose "${e.cheap.label}": ${CIVS[to].name} takes the damage.`}
+                    {to === originalTo
+                      ? `${CIVS[from].name} sent ${e.name.toLowerCase()} toward ${CIVS[to].name}.`
+                      : `${CIVS[originalTo].name} redirected ${e.name.toLowerCase()} from ${CIVS[from].name} toward ${CIVS[to].name}.`}
                   </title>
                 </g>
               );

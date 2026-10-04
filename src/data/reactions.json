@@ -1,0 +1,29 @@
+{
+  "absorb": {
+    "label": "Absorb the impact",
+    "description": "Spend locally to halve every incoming loss.",
+    "cost": {
+      "brick": 1
+    },
+    "lossMultiplier": 0.5
+  },
+  "redirect": {
+    "label": "Redirect the effect",
+    "description": "Build an emergency channel and pass the full effect to the next legal town.",
+    "cost": {
+      "wood": 1,
+      "brick": 1
+    }
+  },
+  "embargo": {
+    "label": "Impose an embargo",
+    "description": "Take the hit, but block the source town's bank trade and reduce one resource income this decade.",
+    "cost": {},
+    "incomePenalty": 1
+  },
+  "accept": {
+    "label": "Take the hit",
+    "description": "Accept the full incoming loss without spending resources or retaliating.",
+    "cost": {}
+  }
+}

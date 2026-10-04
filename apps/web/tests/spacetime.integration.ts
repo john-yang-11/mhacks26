@@ -44,7 +44,7 @@ async function main() {
       seed: 42,
       solo: false,
     });
-    await guest.reducers.joinWorld({ roomId: id, civ: "archipelago" });
+    await guest.reducers.joinWorld({ roomId: id, civ: "enclave" });
     await assert.rejects(
       intruder.reducers.joinWorld({ roomId: id, civ: "heartland" }),
       "claimed seats cannot be stolen",
@@ -67,7 +67,7 @@ async function main() {
       });
     assert.equal(state().round, 1);
     assert.equal(state().phase, "event");
-    assert.deepEqual(state().humans.sort(), ["archipelago", "heartland"]);
+    assert.deepEqual(state().humans.sort(), ["enclave", "heartland"]);
 
     // Only the host moves from the event to the quiz.
     await assert.rejects(guest.reducers.advance({ roomId: id }));
@@ -81,7 +81,7 @@ async function main() {
     // Each player answers their own question on the server clock; no replays.
     for (const [conn, civ] of [
       [host, "heartland"],
-      [guest, "archipelago"],
+      [guest, "enclave"],
     ] as const) {
       const questionId = state().civs[civ].quiz!.questionId;
       const question = QUESTIONS.find((q) => q.id === questionId)!;
@@ -103,7 +103,7 @@ async function main() {
     await act(host, { type: "acknowledge", civ: "heartland" });
     await until(() => state().civs.heartland.responded === true);
     assert.equal(state().phase, "response", "waits for the guest response");
-    await act(guest, { type: "acknowledge", civ: "archipelago" });
+    await act(guest, { type: "acknowledge", civ: "enclave" });
     await until(() => state().phase === "choice");
 
     // No impersonation, no stale revisions.
@@ -113,11 +113,64 @@ async function main() {
     await assert.rejects(
       act(host, { type: "choose", civ: "heartland", option: 2 }, 1),
     );
-    await act(host, { type: "choose", civ: "heartland", option: 2 });
-    await until(() => state().civs.heartland.choice === 2);
+    await act(host, { type: "choose", civ: "heartland", option: 0 });
+    await until(() => state().civs.heartland.choice === 0);
     assert.equal(state().phase, "choice", "waits for the guest");
-    await act(guest, { type: "choose", civ: "archipelago", option: 2 });
+    await act(guest, { type: "choose", civ: "enclave", option: 2 });
+    await until(() => state().phase === "reaction");
+
+    const pushed = state().pendingEffects.find(
+      (effect) => effect.from === "heartland" && effect.to === "enclave",
+    )!;
+    assert(pushed, "host cheap choice should create an incoming effect");
+    await assert.rejects(
+      act(host, {
+        type: "react",
+        civ: "heartland",
+        effectId: pushed.id,
+        kind: "accept",
+      }),
+      "only the victim may react",
+    );
+    await act(guest, {
+      type: "react",
+      civ: "enclave",
+      effectId: pushed.id,
+      kind: "embargo",
+      resource: "brick",
+    });
+    await until(
+      () => !!state().pendingEffects.find((e) => e.id === pushed.id)?.reaction,
+    );
+
+    for (const [conn, civ] of [
+      [host, "heartland"],
+      [guest, "enclave"],
+    ] as const)
+      while (state().phase === "reaction") {
+        const pending = state().pendingEffects.find(
+          (effect) => effect.to === civ && !effect.reaction,
+        );
+        if (!pending) break;
+        const previous = row().revision;
+        await act(conn, {
+          type: "react",
+          civ,
+          effectId: pending.id,
+          kind: "accept",
+        });
+        await until(() => row().revision > previous);
+      }
     await until(() => state().phase === "build");
+    await assert.rejects(
+      act(host, {
+        type: "exchange",
+        civ: "heartland",
+        give: "sheep",
+        get: "ore",
+      }),
+      "embargo blocks bank exchange",
+    );
 
     // Build, then both end the turn.
     await host.reducers.ready({ roomId: id });
@@ -129,7 +182,7 @@ async function main() {
     assert.equal(guest.db.room.id.find(id)?.stateJson, row().stateJson);
     await until(() => [...host.db.seat.iter()].every((seat) => !seat.ready));
     console.log(
-      "PASS: two identities share a room; claimed and late seats are rejected; host-only advance and server-timed quizzes work; response, choice, and ready phases wait for both players; impersonation and stale revisions are rejected.",
+      "PASS: two identities share a room; claimed and late seats are rejected; host-only advance and server-timed quizzes work; victim-only reactions and embargoes are enforced; response, choice, reaction, and ready phases synchronize.",
     );
   } finally {
     host.disconnect();
