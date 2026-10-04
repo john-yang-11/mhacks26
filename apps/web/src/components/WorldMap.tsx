@@ -93,7 +93,16 @@ function LiveTerrain({
           return age < OCEAN.trade.frames ? [{ civ: t.civ, frame: age }] : [];
         })
         .slice(-OCEAN.trade.maxBoats);
-      renderWorldView(s, still ? 24 : frame, image.data, view, traffic);
+      // The reveal plays out once per decade; reduced motion skips straight to the full hazard.
+      const strikeAge = s.phase === "event" && !still ? frame : Infinity;
+      renderWorldView(
+        s,
+        still ? 24 : frame,
+        image.data,
+        view,
+        traffic,
+        strikeAge,
+      );
       ctx.putImageData(image, 0, 0);
       frame++;
     };
@@ -273,15 +282,47 @@ function pixelArrow(
   };
 }
 
+/** Disasters that shake the screen, and ones that flash it, when they are revealed. */
+const SHAKE = new Set([
+  "earthquake",
+  "landslide",
+  "tsunami",
+  "dam_failure",
+  "flood",
+]);
+const FLASH: Record<string, string> = {
+  wildfire: "fire",
+  volcano: "fire",
+  hurricane: "storm",
+  sea_rise: "storm",
+  tsunami: "storm",
+  heatwave: "fire",
+};
+
 export default function WorldMap({
   state,
   selected,
   onSelect,
+  focus,
 }: {
   state: GameState;
   selected?: CivId;
   onSelect: (civ: CivId) => void;
+  /** The town whose disaster this player is facing (shaken, flashed and pulsed on reveal). */
+  focus?: CivId;
 }) {
+  const focusCiv = focus ?? state.player;
+  const struck =
+    state.phase !== "ended" ? state.events[focusCiv]?.type : undefined;
+  // A short strike moment when each decade's disaster is revealed.
+  const [strike, setStrike] = useState(false);
+  useEffect(() => {
+    if (state.phase !== "event") return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    setStrike(true);
+    const t = window.setTimeout(() => setStrike(false), 1600);
+    return () => window.clearTimeout(t);
+  }, [state.seed, state.round]);
   const [zoomStep, setZoomStep] = useState(0);
   const svg = useRef<SVGSVGElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
@@ -345,7 +386,12 @@ export default function WorldMap({
         })
       : [];
   return (
-    <div className="map-shell pixel-map">
+    <div
+      className={`map-shell pixel-map ${strike && struck && SHAKE.has(struck) ? "strike-shake" : ""}`}
+    >
+      {strike && struck && FLASH[struck] && (
+        <div className={`strike-flash ${FLASH[struck]}`} aria-hidden="true" />
+      )}
       <LiveTerrain
         key={`${state.seed}:${state.round}`}
         state={state}
@@ -373,6 +419,7 @@ export default function WorldMap({
           {TOWNS.map((town) => {
             const civ = OWNERS[town.civ];
             const [x, y] = keep(civ);
+            const pulsing = strike && civ === focusCiv;
             const ev = state.phase !== "ended" ? state.events[civ] : undefined;
             const e = ev ? EVENTS[ev.type] : undefined;
             const open = () => onSelect(civ);
@@ -391,6 +438,16 @@ export default function WorldMap({
                 }}
                 className="castle-hotspot"
               >
+                {pulsing && (
+                  <circle
+                    className="strike-ring"
+                    cx={x}
+                    cy={y - 20}
+                    r={90}
+                    fill="none"
+                    aria-hidden="true"
+                  />
+                )}
                 <rect
                   x={x - 50}
                   y={y - 44}

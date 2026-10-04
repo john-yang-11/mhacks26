@@ -70,10 +70,17 @@ export interface News {
   round: number;
   civ?: CivId;
   text: string;
-  /** Resource exchanges trigger shared, replayable port traffic. */
-  kind?: "trade";
+  /**
+   * "trade": a resource exchange (drives port traffic). "event": a town's disaster and how it
+   * responded. "spill": damage a neighbor's cheap fix pushed onto this town. Events and spills let
+   * the map draw lasting scars that heal over the following decades.
+   */
+  kind?: "trade" | "event" | "spill";
   give?: Resource;
   get?: Resource;
+  event?: EventId;
+  option?: 0 | 1 | 2;
+  from?: CivId;
 }
 export interface GameState {
   version: 2;

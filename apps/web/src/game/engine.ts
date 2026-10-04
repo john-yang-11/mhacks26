@@ -409,6 +409,9 @@ function resolveEvents(s: GameState) {
     s.news.push({
       round: s.round,
       civ: c,
+      kind: "event",
+      event: ev.type,
+      option: civ.choice,
       text: `${CIVS[c].name}: ${e.name.toLowerCase()} arrived by ${e.carrier}${ev.cause ? ` from ${CIVS[ev.cause].name}` : ""}; lost ${describe(taken)}.`,
     });
   }
@@ -416,7 +419,14 @@ function resolveEvents(s: GameState) {
     const taken = lose(s.civs[sp.to].stock, sp.loss);
     const line = `${CIVS[sp.from].name} pushed their ${EVENTS[sp.event].name.toLowerCase()} onto us: we lost ${describe(taken)}.`;
     s.civs[sp.to].report.push(line);
-    s.news.push({ round: s.round, civ: sp.to, text: line });
+    s.news.push({
+      round: s.round,
+      civ: sp.to,
+      kind: "spill",
+      event: sp.event,
+      from: sp.from,
+      text: line,
+    });
   }
   s.climate = round2(Math.max(0, s.climate));
 }

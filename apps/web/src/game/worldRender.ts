@@ -49,6 +49,11 @@ const C = {
   murk: rgb("#3c5446"),
   char: rgb("#2a221c"),
   charD: rgb("#16110e"),
+  ember: rgb("#f06020"),
+  emberY: rgb("#ffe14a"),
+  mud: rgb("#6e4c2a"),
+  wetSand: rgb("#b8a06a"),
+  debris: rgb("#5e3c20"),
   soil: rgb("#8a6238"),
   dry: rgb("#b8982e"),
   sludge: rgb("#6e6230"),
@@ -330,6 +335,7 @@ export function renderWorldView(
   out: Uint8ClampedArray,
   view: WorldView,
   traffic = tradeTraffic(state, frame),
+  strikeAge = Infinity,
 ) {
   const { width, height, originX, originY, clip } = view;
   for (let y = 0; y < height; y++)
@@ -342,7 +348,7 @@ export function renderWorldView(
       out[o + 3] = 255;
     }
   const island = new Uint8ClampedArray(MAP_W * MAP_H * 4);
-  renderWorld(state, frame, island, traffic);
+  renderWorld(state, frame, island, traffic, strikeAge);
   for (let y = 0; y < MAP_H; y++)
     for (let x = 0; x < MAP_W; x++) {
       const tx = x + originX,
@@ -365,7 +371,7 @@ export function renderWorldView(
   const active =
     state &&
     state.phase !== "ended" &&
-    areaStatus(state).some((a) => a.effects.has("tsunami"));
+    areaStatus(state).some((a) => a.active.has("tsunami"));
   if (!active) return;
   const side = tsunamiDirection(state);
   const alongX = side !== "south",
@@ -399,26 +405,52 @@ export function renderWorldView(
     }
 }
 
+/** Frames a disaster takes to sweep in when it is revealed (about 3s at the map's 6fps). */
+export const STRIKE_FRAMES = 18;
+const ACTIVE_PHASES = new Set(["event", "quiz", "response", "choice"]);
+
 export interface AreaStatus {
+  /** Everything touching this region this decade (raging or aftermath). */
   effects: Set<string>;
+  /** Hazards still raging: from the reveal until the town has made its choice. */
+  active: Set<string>;
+  /** Scars left behind, by event: strength 0..1 and the decade it struck. */
+  after: Map<string, { strength: number; round: number }>;
   buildings: string[];
+  /** 1 while a hazard rages; the scar strength afterwards (drives smoke over the keep). */
   damaged: number;
 }
+/** How much damage a response leaves behind: braced = all of it, sustainable = less, cheap = none here. */
+const SCAR = (option: number | undefined) =>
+  option === 0 ? 0 : option === 1 ? 0.6 : 1;
 /** What is happening in each town's region right now. */
 export function areaStatus(state?: GameState): AreaStatus[] {
   return TOWNS.map((t) => {
     const civ = OWNERS[t.civ];
     const effects = new Set<string>();
+    const active = new Set<string>();
+    const after = new Map<string, { strength: number; round: number }>();
     let damaged = 0;
+    const scar = (event: string, strength: number, round: number) => {
+      if (strength <= 0) return;
+      const prev = after.get(event);
+      if (!prev || prev.strength < strength)
+        after.set(event, { strength, round });
+      damaged = Math.max(damaged, strength);
+    };
     if (state && state.phase !== "ended") {
       const own = state.events[civ];
-      const avoided = state.phase === "build" && state.civs[civ].choice === 0;
-      if (own && !avoided) {
+      if (own && ACTIVE_PHASES.has(state.phase)) {
+        active.add(own.type);
         effects.add(own.type);
         damaged = 1;
       }
-      // Hazards a neighbor's cheap choice pushed onto this region.
-      if (state.phase === "build")
+      if (own && state.phase === "build") {
+        // The hazard is over: what's left depends on how the town responded.
+        const strength = SCAR(state.civs[civ].choice);
+        if (strength > 0) effects.add(own.type);
+        scar(own.type, strength, state.round);
+        // Hazards a neighbor's cheap fix pushed onto this region.
         for (const other of CIV_IDS) {
           const e = EVENTS[state.events[other]?.type];
           if (
@@ -429,12 +461,29 @@ export function areaStatus(state?: GameState): AreaStatus[] {
             continue;
           if (spillTarget(other, e.cheap.spillTo) === civ) {
             effects.add(state.events[other].type);
-            damaged = 1;
+            scar(state.events[other].type, 0.6, state.round);
           }
         }
+      }
+    }
+    // Scars from earlier decades fade: 3 decades to heal, 2 after a sustainable response.
+    for (const n of state?.news ?? []) {
+      if (
+        (n.kind !== "event" && n.kind !== "spill") ||
+        n.civ !== civ ||
+        !n.event
+      )
+        continue;
+      const age = state!.round - n.round;
+      if (age < 1) continue;
+      const base = n.kind === "spill" ? 0.6 : SCAR(n.option);
+      const heal = n.kind === "event" && n.option === 1 ? 2 : 3;
+      scar(n.event, base * (1 - age / (heal + 1)), n.round);
     }
     return {
       effects,
+      active,
+      after,
       buildings: state
         ? ["house", "house", ...state.civs[civ].buildings]
         : ["house", "house"],
@@ -442,41 +491,100 @@ export function areaStatus(state?: GameState): AreaStatus[] {
     };
   });
 }
-/** Separate flame lobes, three poses, so the fire shifts instead of sitting in a bar. */
-const FLAMES = [
-  [
-    "..R...........",
-    ".ROR...R....R.",
-    "OYYO..ROR..ROR",
-    ".OOO.OYYO.OYYO",
-    "..O...OO...OO.",
-    "......O.....O.",
-  ],
-  [
-    ".......R......",
-    "..R...ROR...R.",
-    ".ROR.OYYO..ROR",
-    "OYYO..OOO.OYYO",
-    ".OO....O...OO.",
-    "..O.........O.",
-  ],
-  [
-    "...........R..",
-    "..R....R...ROR",
-    ".ROR..ROR.OYYO",
-    "OYYO.OYYO..OO.",
-    ".OO...OO....O.",
-    "..O....O......",
-  ],
+/** A small flame tile, three poses, flickered at the map's 6fps. */
+const FLAME_TILES = [
+  [".R.", "ROR", "OYO", ".O."],
+  ["R..", ".RO", "OYO", ".O."],
+  ["..R", "OR.", "OYO", ".O."],
 ];
 const FLAME: Record<string, RGB> = {
   R: rgb("#d02818"),
   O: rgb("#f06020"),
   Y: rgb("#ffe14a"),
 };
+const FIRE_RADIUS = 30;
+interface Fire {
+  a: number;
+  cx: number;
+  cy: number;
+  /** Current burning radius (grows during the strike). */
+  r: number;
+  /** Raging (flames) vs a scar (burnt ground). */
+  burning: boolean;
+  /** Scar strength 0..1. */
+  strength: number;
+  /** Scar from this decade (still smoldering). */
+  fresh: boolean;
+}
+const ignitionPool = new Map<number, number[]>();
+/** Where a town's fire starts in a given decade: forest or grass 10-20px from the keep. */
+function ignition(L: WorldLayers, a: number, round: number): [number, number] {
+  let pool = ignitionPool.get(a);
+  const [cx, cy] = TOWNS[a].keepTile;
+  if (!pool) {
+    pool = [];
+    for (let y = cy - 20; y <= cy + 20; y++)
+      for (let x = cx - 20; x <= cx + 20; x++) {
+        if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) continue;
+        const d = Math.hypot(x - cx, y - cy);
+        const i = y * MAP_W + x;
+        const k = L.kind[i];
+        if (
+          d >= 10 &&
+          d <= 20 &&
+          L.area[i] === a &&
+          (k === KIND.forest || k === KIND.grass || k === KIND.pasture)
+        )
+          pool.push(i);
+      }
+    ignitionPool.set(a, pool);
+  }
+  if (!pool.length) return [cx, cy];
+  const pick = pool[(Math.imul(round + 7, 2654435761) >>> 0) % pool.length];
+  return [pick % MAP_W, (pick / MAP_W) | 0];
+}
+/** Every fire on the map this frame: raging ones spread out from their ignition during the strike. */
+function fires(
+  L: WorldLayers,
+  state: GameState | undefined,
+  status: AreaStatus[],
+  progress: number,
+): Fire[] {
+  const out: Fire[] = [];
+  status.forEach((st, a) => {
+    for (const e of ["wildfire", "volcano"]) {
+      if (st.active.has(e)) {
+        const [cx, cy] = ignition(L, a, state?.round ?? 0);
+        out.push({
+          a,
+          cx,
+          cy,
+          r: Math.max(2, FIRE_RADIUS * progress),
+          burning: true,
+          strength: 1,
+          fresh: true,
+        });
+      }
+      const scar = st.after.get(e);
+      if (scar) {
+        const [cx, cy] = ignition(L, a, scar.round);
+        out.push({
+          a,
+          cx,
+          cy,
+          r: FIRE_RADIUS,
+          burning: false,
+          strength: scar.strength,
+          fresh: scar.round === state?.round,
+        });
+      }
+    }
+  });
+  return out;
+}
+const burnable = (k: number) =>
+  k === KIND.forest || k === KIND.grass || k === KIND.pasture;
 
-const FIRE_RADIUS = 38;
-/** 1 in the middle of a town's fire, fading to 0 at a round, slightly uneven rim. */
 /**
  * Earthquake fissures for one town: five short jagged cracks running outward from near the keep,
  * one with a small branch. 1 = crack, 2 = dusty edge beside it. Computed once per town.
@@ -526,45 +634,6 @@ function quakeCracks(a: number): Uint8Array {
   return mask;
 }
 
-function fireSpread(x: number, y: number, h: number, status: AreaStatus[]) {
-  let burn = 0;
-  for (let a = 0; a < status.length; a++) {
-    const fx = status[a].effects;
-    if (!fx.has("wildfire") && !fx.has("volcano")) continue;
-    const [cx, cy] = TOWNS[a].keepTile;
-    const dist = Math.hypot(x - cx, y - cy);
-    const radius = FIRE_RADIUS + ((h + a * 13) % 7) - 3;
-    const rim = 8;
-    if (dist >= radius + rim) continue;
-    const t = dist <= radius ? 1 : 1 - (dist - radius) / rim;
-    if (t > burn) burn = t;
-  }
-  return burn;
-}
-/** Flame colour at this pixel, or undefined where the charred ground should show. */
-function flameColor(
-  x: number,
-  y: number,
-  frame: number,
-  hash: Uint8Array,
-): RGB | undefined {
-  const bob = (frame >> 2) & 1;
-  const rows = FLAMES[(frame >> 1) % FLAMES.length];
-  for (let dy = 0; dy < rows.length; dy++) {
-    const ay = y - dy + bob;
-    if (ay < 0 || ay >= MAP_H) continue;
-    const row = rows[dy];
-    for (let dx = 0; dx < row.length; dx++) {
-      const ch = row[dx];
-      if (ch === ".") continue;
-      const ax = x - dx;
-      if (ax < 0 || ax >= MAP_W) continue;
-      if (hash[ay * MAP_W + ax] % 251 === 0) return FLAME[ch];
-    }
-  }
-  return;
-}
-
 /** Snow at lower altitude melts first as the planet warms (climate is °C above baseline). */
 const meltThreshold = (y: number, h: number) =>
   3 - (Math.min(y, 50) / 50) * 2.6 + (h / 255 - 0.5) * 0.4;
@@ -576,6 +645,8 @@ function terrainPixel(
   status: AreaStatus[],
   climate: number,
   ocean: number,
+  progress: number,
+  fireList: Fire[],
 ): RGB {
   const x = i % MAP_W,
     y = (i / MAP_W) | 0,
@@ -604,17 +675,22 @@ function terrainPixel(
   if (k === KIND.water && h < 120 && (x * 5 + y - (frame % 3) * 2) % 13 === 0)
     c = C.shimmer;
 
-  // Hazards active in this area (sea tiles take the hazards of the nearest area).
+  // Hazards in this area (sea tiles take the hazards of the nearest area).
   const owner = a !== NONE ? a : L.near[i];
-  const fx = owner === NONE ? undefined : status[owner].effects;
+  const fx = owner === NONE ? undefined : status[owner].active;
   const land = a !== NONE && !isSea(k);
+  const p = progress; // 0 -> 1 while the disaster sweeps in
+  const fresh = h / 255 < p; // a pixel the strike has reached
+  // Distance from the struck town's keep, normalised (quake cracks race outward from it).
+  const keepDist = (o: number) =>
+    Math.hypot(x - TOWNS[o].keepTile[0], y - TOWNS[o].keepTile[1]) / 30;
   if (fx && fx.size) {
     for (const e of fx) {
       if (
         (e === "flood" || e === "dam_failure") &&
         land &&
         lowland(k) &&
-        L.distWater[i] <= 3
+        L.distWater[i] <= Math.round(4 * p)
       ) {
         c =
           ((x + y + (frame >> 1)) & 3) === 0
@@ -626,20 +702,24 @@ function terrainPixel(
         (e === "hurricane" || e === "tsunami" || e === "sea_rise") &&
         land &&
         lowland(k) &&
-        L.distSea[i] <= 4
+        L.distSea[i] <= Math.round(5 * p)
       ) {
         c = ((x - y + (frame >> 1)) & 3) === 0 ? C.foam : C.flood;
-      } else if (e === "spill" && (isSea(k) || k === KIND.water)) {
+      } else if (e === "spill" && (isSea(k) || k === KIND.water) && fresh) {
         const band = (x + 2 * y + (frame >> 1)) % 6;
         if (band === 0) c = C.sludge;
         else if (band === 1) c = C.sludgeD;
-      } else if ((e === "smog" || e === "heatwave") && (x + 2 * y) % 5 === 0) {
+      } else if (
+        (e === "smog" || e === "heatwave") &&
+        (x + 2 * y) % 5 === 0 &&
+        fresh
+      ) {
         c = mix(c, rgb(EVENTS[e as keyof typeof EVENTS].color), 0.5);
       } else if (e === "drought" && land) {
         // Patchy, not total: keeps the area readable while showing it has dried out.
         if (
           (k === KIND.grass || k === KIND.pasture || k === KIND.field) &&
-          h < 110
+          h < 110 * p
         )
           c = mix(c, h < 55 ? C.dry : C.soil, 0.7);
         else if (k === KIND.water) {
@@ -649,33 +729,91 @@ function terrainPixel(
         }
       } else if ((e === "earthquake" || e === "landslide") && land) {
         // A few short jagged fissures around the struck town (no region-wide lines).
-        const crack = quakeCracks(owner)[i];
+        const crack = keepDist(owner) <= p ? quakeCracks(owner)[i] : 0;
         if (crack === 1) c = C.fissure;
         else if (crack === 2) c = mix(c, C.soil, 0.55);
         else if (e === "landslide" && L.distWater[i] <= 2 && h < 100)
           c = C.soil;
       } else if (e === "grid_failure" && land) {
-        c = mix(c, C.ink, 0.35);
-      } else if (e === "pandemic" && land && (x + y * 2) % 7 === 0) {
+        // the lights flicker out during the strike, then stay dark
+        if (p >= 1 || frame & 1) c = mix(c, C.ink, 0.35);
+      } else if (e === "pandemic" && land && (x + y * 2) % 7 === 0 && fresh) {
         c = mix(c, rgb(EVENTS.pandemic.color), 0.55);
-      } else if (e === "supply_shock" && land && h < 70) {
+      } else if (e === "supply_shock" && land && h < 70 && fresh) {
         c = mix(c, rgb(EVENTS.supply_shock.color), 0.35);
       }
     }
   }
-  // A wildfire is a circle around the town, not a fill up to the region line.
-  if (k === KIND.forest || k === KIND.grass || k === KIND.pasture) {
-    const burn = fireSpread(x, y, h, status);
-    if (burn > 0.8) {
-      c = mix(c, h & 1 ? C.char : C.charD, 0.92);
-      const flame = flameColor(x, y, frame, L.hash);
-      if (flame) c = flame;
-    } else if (burn > 0.35) {
-      c = mix(c, C.char, 0.4 + burn * 0.45);
-    } else if (burn > 0) {
-      c = mix(c, C.char, burn * 0.45);
+  // Aftermath: scars from this and earlier decades, healing patchily as their strength falls.
+  const scars = owner === NONE ? undefined : status[owner].after;
+  if (scars && scars.size)
+    for (const [e, { strength }] of scars) {
+      const scarred = h / 255 < strength; // healed pixels show the land again
+      if (
+        (e === "flood" || e === "dam_failure") &&
+        land &&
+        lowland(k) &&
+        L.distWater[i] <= 3 &&
+        scarred
+      )
+        c = h % 7 === 0 ? C.flood : mix(c, C.mud, 0.6); // mud and puddles
+      else if (
+        (e === "hurricane" || e === "tsunami" || e === "sea_rise") &&
+        land &&
+        lowland(k) &&
+        L.distSea[i] <= 4 &&
+        scarred
+      )
+        c = h % 9 === 0 ? C.debris : mix(c, C.wetSand, 0.5); // wet sand and debris
+      else if (
+        e === "spill" &&
+        (isSea(k) || k === KIND.water) &&
+        scarred &&
+        (x + 2 * y) % 6 === 0
+      )
+        c = C.sludgeD; // stained water
+      else if (
+        (e === "smog" || e === "heatwave") &&
+        (x + 2 * y) % 9 === 0 &&
+        scarred
+      )
+        c = mix(c, rgb(EVENTS[e as keyof typeof EVENTS].color), 0.3);
+      else if (
+        e === "drought" &&
+        land &&
+        (k === KIND.grass || k === KIND.pasture || k === KIND.field) &&
+        h < 110 &&
+        scarred
+      )
+        c = (x * 3 + y) % 11 === 0 ? C.soil : mix(c, C.dry, 0.5); // cracked earth
+      else if ((e === "earthquake" || e === "landslide") && land) {
+        const crack = quakeCracks(owner)[i];
+        if (crack === 1) c = mix(c, C.fissure, strength);
+        else if (crack === 2) c = mix(c, C.soil, 0.55 * strength);
+      } else if (e === "grid_failure" && land && scarred)
+        c = mix(c, C.ink, 0.12);
     }
-  }
+
+  // Wildfire: a burn spreading from where it started, then a scar that heals patchily.
+  if (burnable(k))
+    for (const f of fireList) {
+      const d = Math.hypot(x - f.cx, y - f.cy);
+      const rim = f.r + ((h % 5) - 2); // slightly uneven edge
+      if (d > rim) continue;
+      if (f.burning) {
+        if (d > rim - 2)
+          c = ((frame + h) & 1) === 0 ? C.ember : C.emberY; // the advancing front
+        else c = h & 1 ? C.char : C.charD;
+      } else if (h / 255 < f.strength) {
+        // burnt ground; fresh scars still have a few smoldering embers
+        c =
+          f.fresh && h % 23 === 0 && frame % 3 !== 0
+            ? C.ember
+            : h & 1
+              ? C.char
+              : C.charD;
+      }
+    }
   return c;
 }
 
@@ -808,14 +946,30 @@ export function renderWorld(
   frame: number,
   out: Uint8ClampedArray,
   traffic: PortTraffic[] = tradeTraffic(state, frame),
+  strikeAge = Infinity,
 ) {
   const L = worldLayers();
   const status = areaStatus(state);
+  // The reveal: hazards sweep in over STRIKE_FRAMES, then rage at full strength.
+  const progress =
+    state?.phase === "event"
+      ? Math.max(0, Math.min(1, strikeAge / STRIKE_FRAMES))
+      : 1;
+  const fireList = fires(L, state, status, progress);
   const climate = state?.climate ?? 0;
   // Warmer seas are murkier seas.
   const ocean = 100 - climate * 12;
   for (let i = 0; i < MAP_W * MAP_H; i++) {
-    const c = terrainPixel(L, i, frame, status, climate, ocean);
+    const c = terrainPixel(
+      L,
+      i,
+      frame,
+      status,
+      climate,
+      ocean,
+      progress,
+      fireList,
+    );
     out[i * 4] = c[0];
     out[i * 4 + 1] = c[1];
     out[i * 4 + 2] = c[2];
@@ -851,6 +1005,44 @@ export function renderWorld(
       );
     } else {
       blit(out, sp.rows, sp.pal, sp.x, sp.y);
+    }
+  }
+  // Flames over the burning area: a jittered lattice, densest along the advancing front, with smoke.
+  for (const f of fireList) {
+    if (f.burning) {
+      let n = 0;
+      for (let gy = f.cy - f.r; gy <= f.cy + f.r; gy += 5)
+        for (let gx = f.cx - f.r; gx <= f.cx + f.r; gx += 5) {
+          const jx = Math.round(gx + ((gx * 7 + gy * 3) % 3) - 1),
+            jy = Math.round(gy + ((gx * 5 + gy * 11) % 3) - 1);
+          if (jx < 1 || jy < 4 || jx >= MAP_W - 2 || jy >= MAP_H) continue;
+          const i = jy * MAP_W + jx;
+          if (!burnable(L.kind[i])) continue;
+          const d = Math.hypot(jx - f.cx, jy - f.cy);
+          if (d > f.r) continue;
+          // the front always burns; the interior keeps about half its flames
+          if (d < f.r - 6 && L.hash[i] & 1) continue;
+          n++;
+          blit(
+            out,
+            FLAME_TILES[(frame + n) % FLAME_TILES.length],
+            FLAME,
+            jx - 1,
+            jy - 3,
+          );
+          if (n % 3 === 0) puff(out, jx, jy - 4, frame + n, true);
+        }
+    } else if (f.fresh) {
+      // thin smoke still rising from the scar
+      for (let n = 0; n < 4; n++) {
+        const ang = n * 1.7 + f.a;
+        puff(
+          out,
+          Math.round(f.cx + Math.cos(ang) * f.r * 0.5),
+          Math.round(f.cy + Math.sin(ang) * f.r * 0.5) - 2,
+          frame + n * 2,
+        );
+      }
     }
   }
   world.castles.forEach((k, a) => {
@@ -902,9 +1094,12 @@ export function renderWorld(
       );
     }
     blit(out, k.rows, { ...k.pal, F: FLAG[town.civ] }, k.x, k.y);
-    if (st.damaged > 0) {
+    // Smoke over the keep: thick while the hazard rages, a thin wisp while it heals.
+    if (st.damaged >= 1) {
       puff(out, k.x + 2, k.y + 2, frame, true);
       puff(out, k.x + w - 3, k.y + 3, frame + 3, true);
+    } else if (st.damaged > 0.3) {
+      puff(out, k.x + 2, k.y + 2, frame);
     }
   });
   // Each town has a berth; cargo sails out and returns after an actual bank exchange.
