@@ -22,9 +22,13 @@ import {
 } from "../src/game/worldRender";
 import type { CivId, EventId, GameState } from "../src/game/types";
 
-const render = (state: GameState | undefined, frame = 0) => {
+const render = (
+  state: GameState | undefined,
+  frame = 0,
+  strikeAge = Infinity,
+) => {
   const out = new Uint8ClampedArray(MAP_W * MAP_H * 4);
-  renderWorld(state, frame, out);
+  renderWorld(state, frame, out, undefined, strikeAge);
   return out;
 };
 const changed = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
@@ -35,7 +39,7 @@ const changed = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
   return px;
 };
 /** Everyone braces, so the map shows each town's own event during the build phase. */
-function withEvent(civ: CivId, type: EventId) {
+function withEvent(civ: CivId, type: EventId, option: 0 | 1 | 2 = 2) {
   let s = createGame("heartland", "solo", 11);
   for (const c of Object.keys(s.events) as CivId[])
     s.events[c] = { type: "heatwave", loss: {} };
@@ -44,7 +48,42 @@ function withEvent(civ: CivId, type: EventId) {
   const q = questionFor(s, "heartland")!;
   s = answerQuiz(s, "heartland", q.correct, 1000);
   s = applyAction(s, { type: "acknowledge", civ: "heartland" }).state;
-  return applyAction(s, { type: "choose", civ: "heartland", option: 2 }).state;
+  return applyAction(s, { type: "choose", civ: "heartland", option }).state;
+}
+/** A fresh decade, still in the event phase: `civ` has just been struck by `type`. */
+function atReveal(civ: CivId, type: EventId) {
+  const s = createGame("heartland", "solo", 11);
+  for (const c of Object.keys(s.events) as CivId[])
+    s.events[c] = { type: "supply_shock", loss: {} };
+  s.events[civ] = { type, loss: {} };
+  return s;
+}
+/** `age` decades after `civ` was hit by `event` and answered with `option`. */
+function decadesAfter(
+  civ: CivId,
+  event: EventId,
+  option: 0 | 1 | 2,
+  age: number,
+) {
+  const s = createGame("heartland", "solo", 11);
+  for (const c of Object.keys(s.events) as CivId[])
+    s.events[c] = { type: "supply_shock", loss: {} };
+  s.news.push({ round: 1, civ, kind: "event", event, option, text: "x" });
+  s.round = 1 + age;
+  return s;
+}
+const CHAR = ["42,34,28", "22,17,14"];
+const FLAMES = ["208,40,24", "240,96,32", "255,225,74"];
+function countIn(img: Uint8ClampedArray, area: number, colors: string[]) {
+  const L = worldLayers();
+  let n = 0;
+  for (let i = 0; i < MAP_W * MAP_H; i++)
+    if (
+      L.area[i] === area &&
+      colors.includes(`${img[i * 4]},${img[i * 4 + 1]},${img[i * 4 + 2]}`)
+    )
+      n++;
+  return n;
 }
 
 test("world layers decode to a full 320x200 map with one town per civilization", () => {
@@ -171,42 +210,86 @@ test("a flood only recolours the region it hits", () => {
     );
 });
 
-test("wildfire spreads in a circle around the town", () => {
+test("a wildfire sweeps out from where it starts when it is revealed", () => {
   const civ: CivId = "enclave";
-  const quiet = render(withEvent(civ, "drought"), 0);
-  const fire = render(withEvent(civ, "wildfire"), 0);
-  const later = render(withEvent(civ, "wildfire"), 4);
-  const L = worldLayers();
-  const [kx, ky] = TOWNS[townIndex(civ)].keepTile;
-  const forest = 5;
-  let core = 0;
-  let coreHit = 0;
-  let far = 0;
-  let farHit = 0;
-  let beyond = 0;
-  for (let i = 0; i < MAP_W * MAP_H; i++) {
-    if (L.kind[i] !== forest) continue;
-    const x = i % MAP_W;
-    const y = (i / MAP_W) | 0;
-    const d = Math.hypot(x - kx, y - ky);
-    const hit =
-      fire[i * 4] !== quiet[i * 4] ||
-      fire[i * 4 + 1] !== quiet[i * 4 + 1] ||
-      fire[i * 4 + 2] !== quiet[i * 4 + 2];
-    if (d > 14 && d < 26) {
-      core++;
-      if (hit) coreHit++;
-    }
-    if (d > 62) {
-      far++;
-      if (hit) farHit++;
-    }
-    if (hit && d > 52) beyond++;
+  const area = townIndex(civ);
+  const s = atReveal(civ, "wildfire");
+  const early = render(s, 0, 2);
+  const late = render(s, 0, 18);
+  const burning = (img: Uint8ClampedArray) =>
+    countIn(img, area, [...CHAR, ...FLAMES]);
+  assert(
+    burning(early) < burning(late) / 3,
+    "the burn grows during the strike",
+  );
+  assert(
+    countIn(late, area, FLAMES) > 40,
+    "the fire is full of flames once it has spread",
+  );
+  assert(
+    changed(late, render(s, 1, 18)).length > 0,
+    "flames flicker between frames",
+  );
+});
+
+test("the fire goes out after the response and its scar heals over the decades", () => {
+  const civ: CivId = "enclave";
+  const area = townIndex(civ);
+  const built = render(withEvent(civ, "wildfire"));
+  assert(
+    countIn(built, area, CHAR) > 100,
+    "burnt ground remains in the build phase",
+  );
+  const scar = (option: 0 | 1 | 2, age: number) =>
+    countIn(render(decadesAfter(civ, "wildfire", option, age)), area, CHAR);
+  assert(
+    scar(2, 1) > scar(2, 2) && scar(2, 2) > scar(2, 3) && scar(2, 3) > 0,
+    "braced scars fade over 3 decades",
+  );
+  assert.equal(scar(2, 4), 0, "and are gone after that");
+  assert(
+    scar(1, 1) < scar(2, 1),
+    "a sustainable response leaves a lighter scar",
+  );
+  assert.equal(scar(1, 3), 0, "and heals within 2 decades");
+});
+
+test("a cheap fix leaves no scar at home but scars the neighbor it was pushed onto", () => {
+  const civ: CivId = "heartland";
+  const s = withEvent(civ, "flood", 0);
+  const status = areaStatus(s);
+  assert(
+    !status[townIndex(civ)].after.has("flood"),
+    "the flood was moved away from home",
+  );
+  assert(
+    status.some((st, a) => a !== townIndex(civ) && st.after.has("flood")),
+    "and landed on a neighbor",
+  );
+});
+
+test("every disaster sweeps in during the strike and leaves an aftermath", () => {
+  const civ: CivId = "archipelago";
+  for (const e of [
+    "flood",
+    "hurricane",
+    "earthquake",
+    "smog",
+    "drought",
+    "spill",
+    "wildfire",
+  ] as EventId[]) {
+    const struck = atReveal(civ, e),
+      calm = atReveal(civ, "supply_shock");
+    const at = (age: number) =>
+      changed(render(calm, 0, age), render(struck, 0, age)).length;
+    assert(at(2) < at(18), `${e} grows as it sweeps in`);
+    const scarPixels: number = changed(
+      render(withEvent(civ, "pandemic")),
+      render(withEvent(civ, e)),
+    ).length;
+    assert(scarPixels > 0, `${e} leaves an aftermath`);
   }
-  assert(core > 30 && coreHit / core > 0.7, "the middle of the circle burns");
-  assert(far > 30 && farHit / far < 0.05, "the region edge stays unburned");
-  assert(beyond === 0, "the burn stays inside the circle");
-  assert(changed(fire, later).length > 10, "flames should move between frames");
 });
 
 test("all 16 event ids reach the live map status", () => {

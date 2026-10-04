@@ -411,6 +411,7 @@ export default function Game() {
             <>
               <WorldMap
                 state={state}
+                focus={civId}
                 selected={inspect}
                 onSelect={(c) => setInspect(inspect === c ? undefined : c)}
               />
